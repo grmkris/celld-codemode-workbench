@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.celld/
+.env
+.env.local
+*.log
+.DS_Store
+coverage/
+test-results/
+playwright-report/
+blob-report/
+worker/vendor/emscripten-module.wasm
+ui/public/emscripten-module.wasm
+docs/screenshots/.private/
+plan.md

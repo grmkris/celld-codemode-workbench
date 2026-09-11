@@ -1,0 +1,185 @@
+:root {
+  color-scheme: dark;
+  --ink: #e8e0d0;
+  --muted: #9a8f7a;
+  --paper: #16130f;
+  --panel: #1e1a14;
+  --line: #3a3228;
+  --accent: #c45c26;
+  --ok: #7ea36b;
+  --warn: #d4a017;
+  --bad: #c44b3c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Source Serif 4", "Iowan Old Style", Palatino, Georgia, serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+
+button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input,
+textarea {
+  width: 100%;
+  background: #120f0c;
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.55rem;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr 360px;
+  min-height: 100vh;
+}
+
+.rail,
+.side {
+  border-right: 1px solid var(--line);
+  padding: 1.2rem;
+}
+
+.side {
+  border-right: 0;
+  border-left: 1px solid var(--line);
+}
+
+.brand {
+  font-size: 1.35rem;
+  margin: 0 0 0.25rem;
+}
+
+.meta,
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.messages {
+  flex: 1;
+  overflow: auto;
+  padding: 1.4rem;
+}
+
+.msg {
+  margin-bottom: 1rem;
+  max-width: 42rem;
+}
+
+.msg.user {
+  margin-left: auto;
+}
+
+.composer {
+  display: flex;
+  gap: 0.5rem;
+  padding: 1rem 1.4rem 1.4rem;
+  border-top: 1px solid var(--line);
+}
+
+.section {
+  margin-bottom: 1.4rem;
+}
+
+.section h2 {
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+.item {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.4rem;
+}
+
+.ok {
+  color: var(--ok);
+}
+.warn {
+  color: var(--warn);
+}
+.bad {
+  color: var(--bad);
+}
+
+pre {
+  white-space: pre-wrap;
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.75rem;
+  margin: 0.4rem 0 0;
+}
+
+.status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.6rem 0 0.8rem;
+}
+
+.pill {
+  display: inline-block;
+  border: 1px solid var(--line);
+  padding: 0.15rem 0.45rem;
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.72rem;
+}
+
+.login {
+  max-width: 28rem;
+  margin: 12vh auto;
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+}
+
+@media (max-width: 1100px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .rail,
+  .side {
+    border: 0;
+    border-top: 1px solid var(--line);
+  }
+}

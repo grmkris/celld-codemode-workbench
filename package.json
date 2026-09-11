@@ -1,0 +1,63 @@
+{
+  "name": "celld-app-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Celld-hosted, Code Mode-first application agent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grmkris/celld-codemode-workbench.git"
+  },
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/copy-wasm.mjs",
+    "build": "vite build",
+    "build:ui": "vite build",
+    "dev": "npm run build:ui && node scripts/dev.mjs",
+    "dev:ui": "vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --type-aware .",
+    "lint:fix": "oxlint --type-aware --fix .",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:celld": "node scripts/run-celld-tests.mjs",
+    "test:e2e": "node scripts/run-celld-tests.mjs --demo",
+    "test:live": "node scripts/run-celld-tests.mjs --live-smoke",
+    "test:browser": "npm run build:ui && npx playwright test",
+    "probe": "node scripts/run-celld-tests.mjs --probe-only",
+    "demo": "node scripts/run-celld-tests.mjs --demo",
+    "smoke:live": "node scripts/run-celld-tests.mjs --live-smoke",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm test",
+    "doctor": "node scripts/doctor.mjs",
+    "measure:bundle": "node scripts/measure-bundle.mjs"
+  },
+  "dependencies": {
+    "@tanstack/ai": "0.54.0",
+    "@tanstack/ai-code-mode": "0.4.9",
+    "@tanstack/ai-grok": "0.18.5",
+    "@tanstack/ai-isolate-quickjs": "0.3.1",
+    "@tanstack/ai-openai": "0.22.6",
+    "effect": "4.0.0-rc.115",
+    "quickjs-emscripten": "0.31.0",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20250906.0",
+    "@playwright/test": "1.55.0",
+    "@types/react": "19.1.12",
+    "@types/react-dom": "19.1.9",
+    "esbuild": "0.25.9",
+    "oxfmt": "0.67.0",
+    "oxlint": "1.82.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "typescript": "5.9.2",
+    "vite": "7.1.5",
+    "vitest": "3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

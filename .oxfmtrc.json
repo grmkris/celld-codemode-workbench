@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": [
+    "node_modules/**",
+    "dist/**",
+    ".celld/**",
+    "test-results/**",
+    "playwright-report/**",
+    "docs/screenshots/.private/**",
+    "plan.md",
+    "**/*.wasm"
+  ]
+}

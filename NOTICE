@@ -1,0 +1,17 @@
+This repository's original application source is MIT-licensed.
+
+It bundles or depends on third-party work that keeps its own licenses,
+including but not limited to:
+
+- celld (Deno / Cloudflare-compatible runtime)
+- @tanstack/ai, @tanstack/ai-code-mode, @tanstack/ai-isolate-quickjs
+- quickjs-emscripten / @jitl/quickjs-wasmfile-release-sync
+- Effect (effect@4.0.0-rc.115)
+- React, Vite, Zod
+
+`worker/isolate.ts` adapts @tanstack/ai-isolate-quickjs for celld by using
+a fuel-tick interrupt instead of Date.now(). That change is application
+source in this repository, not an upstream patch file.
+
+`worker/vendor/quickjs-loader.mjs` is the browser Emscripten loader required
+because the default Node loader hangs on celld.

@@ -1,0 +1,33 @@
+{
+  "name": "celld-app-agent",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": [],
+  "durable_objects": {
+    "bindings": [
+      { "name": "AGENT", "class_name": "AgentCell" },
+      { "name": "PROBE", "class_name": "ProbeCell" },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AgentCell", "ProbeCell"],
+    },
+  ],
+  "assets": {
+    "directory": "./dist/ui",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health"],
+  },
+  "vars": {
+    "AUTH_SECRET": "dev-change-me",
+    "MODEL_PROVIDER": "fixture",
+    "ALIBABA_TOKEN_PLAN_API_KEY": "",
+    "ALIBABA_MODEL": "qwen3.8-max",
+    "OPENAI_MODEL": "gpt-4.1-mini",
+    "XAI_MODEL": "grok-4-1-fast-non-reasoning",
+    "ALLOW_TEST_HOOKS": "0",
+  },
+}

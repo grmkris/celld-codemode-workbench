@@ -1,0 +1,97 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: format lint typecheck unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/copy-wasm.mjs
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: node scripts/measure-bundle.mjs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: check-logs
+          path: test-results
+          if-no-files-found: ignore
+
+  celld:
+    name: real celld integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/copy-wasm.mjs
+      - name: Install celld 0.4.1
+        run: |
+          curl -fsSL https://celld.dev/install.sh | CELLD_VERSION=v0.4.1 sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: celld --version
+      - run: npm run test:celld
+        env:
+          CELLD_TEST_PORT: "9888"
+          CELLD_ISOLATE_ROOT: ${{ runner.temp }}/celld-test-9888
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: celld-test-results
+          path: test-results
+          if-no-files-found: ignore
+
+  browser:
+    name: workbench browser smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/copy-wasm.mjs
+      - name: Install celld 0.4.1
+        run: |
+          curl -fsSL https://celld.dev/install.sh | CELLD_VERSION=v0.4.1 sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+        env:
+          MODEL_PROVIDER: fixture
+          CELLD_ISOLATE_ROOT: ${{ runner.temp }}/celld-browser-9889
+          CELLD_DEV_CLEAN: "1"
+          CELLD_NO_WATCH: "1"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+          if-no-files-found: ignore
