@@ -1,5 +1,4 @@
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ArrowUpIcon } from "lucide-react";
 import {
   InputGroup,
   InputGroupAddon,
@@ -14,24 +13,23 @@ interface Props {
   provider: string;
   onChange: (value: string) => void;
   onSend: () => void;
-  onStop: () => void;
 }
 
-export function PromptForm({ value, busy, live, provider, onChange, onSend, onStop }: Props) {
+export function PromptForm({ value, busy, live, provider, onChange, onSend }: Props) {
   return (
     <form
-      className="border-t border-border p-4"
+      className="border-t border-border bg-[var(--raised)]/40 px-5 py-4"
       onSubmit={(event) => {
         event.preventDefault();
         if (!busy && value.trim()) onSend();
       }}
     >
-      <InputGroup>
+      <InputGroup className="rounded-[var(--radius-card)] border-border bg-[var(--inset)]">
         <InputGroupTextarea
           rows={3}
           value={value}
           aria-label="Message"
-          placeholder="Ask the agent to remember something, create tasks, or write a snippet…"
+          placeholder="Ask the agent…"
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
             if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -39,42 +37,22 @@ export function PromptForm({ value, busy, live, provider, onChange, onSend, onSt
             }
           }}
         />
-        <InputGroupAddon align="block-end">
-          <span className="font-mono text-xs text-muted-foreground">
-            {live ? `live ${provider}` : "fixture"} · ⌘/Ctrl+Enter to send
+        <InputGroupAddon align="block-end" className="justify-between">
+          <span className="machine text-muted-foreground">
+            {live ? `live ${provider}` : "fixture"} — ⌘/Ctrl+Enter
           </span>
-          <div className="ml-auto flex gap-1.5">
-            <InputGroupButton
-              type="submit"
-              size="sm"
-              variant="default"
-              disabled={busy || !value.trim()}
-              aria-label="Send"
-            >
-              <ArrowUpIcon />
-              Send
-            </InputGroupButton>
-            <InputGroupButton
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={onStop}
-              aria-label="Stop"
-            >
-              <SquareIcon />
-              Stop
-            </InputGroupButton>
-          </div>
+          <InputGroupButton
+            type="submit"
+            size="sm"
+            variant="default"
+            disabled={busy || !value.trim()}
+            aria-label="Send"
+          >
+            <ArrowUpIcon />
+            Send
+          </InputGroupButton>
         </InputGroupAddon>
       </InputGroup>
-      <div className="mt-2 flex gap-2 lg:hidden">
-        <Button type="submit" disabled={busy || !value.trim()} className="flex-1">
-          Send
-        </Button>
-        <Button type="button" variant="outline" onClick={onStop}>
-          Stop
-        </Button>
-      </div>
     </form>
   );
 }

@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Marker, MarkerContent } from "@/components/ui/marker";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -23,6 +21,7 @@ interface Props {
   token: string;
   onRefresh: () => void;
   onClearWorkspace: () => void;
+  notifications: Snapshot["notifications"];
 }
 
 export function StatePanels({
@@ -38,170 +37,189 @@ export function StatePanels({
   token,
   onRefresh,
   onClearWorkspace,
+  notifications,
 }: Props) {
   const [showRaw, setShowRaw] = useState(false);
 
   return (
-    <Tabs value={panel} onValueChange={(value) => onPanel(value as Panel)} className="w-full">
-      <TabsList className="grid w-full grid-cols-4">
+    <Tabs
+      value={panel}
+      onValueChange={(value) => onPanel(value as Panel)}
+      className="flex h-full min-h-0 w-full flex-col gap-3"
+    >
+      <TabsList className="grid w-full shrink-0 grid-cols-4">
         <TabsTrigger value="memory">State</TabsTrigger>
-        <TabsTrigger value="snippets">Snippets</TabsTrigger>
+        <TabsTrigger value="snippets">Programs</TabsTrigger>
         <TabsTrigger value="schedules">Schedules</TabsTrigger>
         <TabsTrigger value="trace">Trace</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="memory" className="flex flex-col gap-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-              Memory
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {(snapshot?.memory ?? []).map((item) => (
-              <div key={item.key} className="rounded-xl border border-border bg-muted/30 p-2.5">
-                <strong className="font-mono text-xs">{item.key}</strong>
-                <pre className="mt-1 font-mono text-xs whitespace-pre-wrap">{item.value}</pre>
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="pr-2 pb-4">
+          <TabsContent value="memory" className="mt-0 flex flex-col gap-6">
+            <section>
+              <h2 className="mb-2 text-[15px] font-semibold">Memory</h2>
+              <div className="flex flex-col divide-y divide-border rounded-[var(--radius-well)] border border-border bg-[var(--inset)]">
+                {(snapshot?.memory ?? []).map((item) => (
+                  <div key={item.key} className="px-3 py-2.5">
+                    <div className="machine text-muted-foreground">{item.key}</div>
+                    <pre className="machine mt-1 whitespace-pre-wrap text-foreground">
+                      {item.value}
+                    </pre>
+                  </div>
+                ))}
+                {!snapshot?.memory.length && (
+                  <p className="px-3 py-3 text-sm text-muted-foreground">
+                    Nothing stored yet. Ask the agent to remember a fact.
+                  </p>
+                )}
               </div>
-            ))}
-            {!snapshot?.memory.length && (
-              <p className="font-mono text-xs text-muted-foreground">No memory yet.</p>
-            )}
-          </CardContent>
-        </Card>
+            </section>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-              Tasks
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {openTasks.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center gap-2 rounded-xl border border-border bg-muted/30 p-2.5 text-sm"
-              >
-                <Badge variant="secondary">{item.status}</Badge>
-                <span>{item.title}</span>
+            <section>
+              <h2 className="mb-2 text-[15px] font-semibold">Tasks</h2>
+              <div className="flex flex-col gap-1.5">
+                {openTasks.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-2 rounded-[var(--radius-well)] border border-border px-3 py-2 text-sm"
+                  >
+                    <Badge variant="secondary">{item.status}</Badge>
+                    <span>{item.title}</span>
+                  </div>
+                ))}
+                {openTasks.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No open tasks. Ask the agent to create some.
+                  </p>
+                )}
+                {doneTasks.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-2 rounded-[var(--radius-well)] border border-border/60 px-3 py-2 text-sm text-muted-foreground"
+                  >
+                    <Badge variant="outline">done</Badge>
+                    <span>{item.title}</span>
+                  </div>
+                ))}
+                {doneTasks.length > 0 && (
+                  <p className="machine text-muted-foreground">
+                    {doneTasks.length} completed — clear removes them
+                  </p>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-1 self-start"
+                  onClick={onClearWorkspace}
+                >
+                  Clear memory and tasks
+                </Button>
               </div>
-            ))}
-            {openTasks.length === 0 && (
-              <p className="font-mono text-xs text-muted-foreground">No open tasks.</p>
-            )}
-            {doneTasks.length > 0 && (
-              <p className="font-mono text-xs text-muted-foreground">
-                {doneTasks.length} completed (still stored). Clearing the workspace deletes them.
-              </p>
-            )}
-            {doneTasks.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center gap-2 rounded-xl border border-border p-2.5 text-sm"
-              >
-                <Badge variant="default">done</Badge>
-                <span>{item.title}</span>
+            </section>
+
+            <section>
+              <h2 className="mb-2 text-[15px] font-semibold">Code Mode</h2>
+              <div className="rounded-[var(--radius-well)] border border-border bg-[var(--inset)]">
+                {executions.length === 0 ? (
+                  <p className="px-3 py-3 text-sm text-muted-foreground">
+                    No executions this session. Tool calls appear here as they run.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {executions.map((item) => (
+                      <li key={item.id} className="machine px-3 py-2 text-muted-foreground">
+                        {eventLabel(item)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
-            ))}
-            <Button variant="outline" onClick={onClearWorkspace}>
-              Clear application state
-            </Button>
-          </CardContent>
-        </Card>
+            </section>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-              Code Mode
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {executions.length === 0 && (
-              <p className="font-mono text-xs text-muted-foreground">No executions this session.</p>
-            )}
-            {executions.map((item) => (
-              <Marker key={item.id}>
-                <MarkerContent className="font-mono text-xs">{eventLabel(item)}</MarkerContent>
-              </Marker>
-            ))}
-          </CardContent>
-        </Card>
-      </TabsContent>
+            <section>
+              <h2 className="mb-2 text-[15px] font-semibold">Notifications</h2>
+              <div className="flex flex-col gap-1.5">
+                {notifications.map((item) => (
+                  <div
+                    key={item.id}
+                    className="rounded-[var(--radius-well)] border border-border px-3 py-2 text-sm"
+                  >
+                    {item.message}
+                  </div>
+                ))}
+                {notifications.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No delivered effects. Approved notifications land here.
+                  </p>
+                )}
+              </div>
+            </section>
+          </TabsContent>
 
-      <TabsContent value="snippets">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-              Saved programs
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
+          <TabsContent value="snippets" className="mt-0 flex flex-col gap-3">
             {(snapshot?.snippets ?? []).map((item) => {
               const tests = item.test_results ? JSON.parse(item.test_results) : null;
               const active = activeByName.get(item.name) === String(item.id);
               return (
-                <div key={item.id} className="rounded-xl border border-border bg-muted/30 p-2.5">
-                  <div className="flex flex-wrap items-center gap-1.5 text-sm">
-                    <span className="font-medium">
-                      {item.name} v{item.version}
+                <article
+                  key={item.id}
+                  className="overflow-hidden rounded-[var(--radius-card)] border border-border"
+                >
+                  <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-[var(--raised)] px-3 py-2">
+                    <span className="text-sm font-medium">
+                      {item.name}{" "}
+                      <span className="machine text-muted-foreground">v{item.version}</span>
                     </span>
-                    {active ? <Badge variant="default">active</Badge> : null}
+                    {active ? <Badge>active</Badge> : null}
                     <Badge variant={tests?.passed ? "default" : "secondary"}>
                       {tests ? (tests.passed ? "tested" : "failed test") : "untested"}
                     </Badge>
                   </div>
                   {item.description ? (
-                    <p className="mt-1 font-mono text-xs text-muted-foreground">
-                      {item.description}
-                    </p>
+                    <p className="px-3 pt-2 text-sm text-muted-foreground">{item.description}</p>
                   ) : null}
-                  <ScrollArea className="mt-2 max-h-40 rounded-lg border border-border bg-background p-2">
-                    <pre className="font-mono text-xs">{item.source}</pre>
-                  </ScrollArea>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="mt-2"
-                    onClick={() =>
-                      void api(`${base}/snippets/invoke`, {
-                        method: "POST",
-                        token,
-                        body: JSON.stringify({ name: item.name, version: item.version }),
-                      }).then(onRefresh)
-                    }
-                  >
-                    Invoke without model
-                  </Button>
-                </div>
+                  <pre className="machine max-h-40 overflow-auto bg-[var(--inset)] px-3 py-2.5">
+                    {item.source}
+                  </pre>
+                  <div className="border-t border-border px-3 py-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        void api(`${base}/snippets/invoke`, {
+                          method: "POST",
+                          token,
+                          body: JSON.stringify({ name: item.name, version: item.version }),
+                        }).then(onRefresh)
+                      }
+                    >
+                      Invoke without model
+                    </Button>
+                  </div>
+                </article>
               );
             })}
             {!snapshot?.snippets.length && (
-              <p className="font-mono text-xs text-muted-foreground">No snippets saved.</p>
+              <p className="text-sm text-muted-foreground">
+                No programs saved. Ask the agent to write a snippet.
+              </p>
             )}
-          </CardContent>
-        </Card>
-      </TabsContent>
+          </TabsContent>
 
-      <TabsContent value="schedules">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-              Schedules
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
+          <TabsContent value="schedules" className="mt-0 flex flex-col gap-2">
             {(snapshot?.schedules ?? []).map((item) => (
               <div
                 key={item.id}
-                className="rounded-xl border border-border bg-muted/30 p-2.5 text-sm"
+                className="rounded-[var(--radius-well)] border border-border px-3 py-2.5"
               >
-                <div className="flex items-center gap-2">
-                  <span>{item.name}</span>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium">{item.name}</span>
                   <Badge variant={item.status === "paused" ? "secondary" : "default"}>
                     {item.status}
                   </Badge>
                 </div>
-                <div className="mt-1 font-mono text-xs text-muted-foreground">
+                <div className="machine mt-1 text-muted-foreground">
                   due {new Date(item.next_due_at).toISOString()}
                 </div>
                 <Button
@@ -223,16 +241,20 @@ export function StatePanels({
             {(snapshot?.occurrences ?? []).map((item) => (
               <div
                 key={item.id}
-                className="rounded-xl border border-border p-2.5 font-mono text-xs"
+                className="machine rounded-[var(--radius-well)] border border-border px-3 py-2 text-muted-foreground"
               >
                 {item.status} @ {new Date(item.due_at).toISOString()}
               </div>
             ))}
             {!snapshot?.schedules.length && (
-              <p className="font-mono text-xs text-muted-foreground">No schedules.</p>
+              <p className="text-sm text-muted-foreground">
+                No schedules. Activate a snippet, then schedule it.
+              </p>
             )}
             <Button
               variant="outline"
+              size="sm"
+              className="self-start"
               onClick={() =>
                 void api(`${base}/schedules`, {
                   method: "POST",
@@ -247,44 +269,41 @@ export function StatePanels({
             >
               Schedule active snippet
             </Button>
-          </CardContent>
-        </Card>
-      </TabsContent>
+          </TabsContent>
 
-      <TabsContent value="trace">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-              Observable actions
-            </CardTitle>
-            <label className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
-              <Switch checked={showRaw} onCheckedChange={setShowRaw} />
-              Show raw payloads
-            </label>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            <ScrollArea className="max-h-[60vh]">
-              <div className="flex flex-col gap-2 pr-2">
-                {events.filter(interesting).map((item) => (
-                  <div key={item.id} className="rounded-xl border border-border bg-muted/30 p-2.5">
-                    <div className="font-mono text-xs">
-                      {item.id} {eventLabel(item)}
-                    </div>
-                    {showRaw ? (
-                      <pre className="mt-1 max-h-32 overflow-auto font-mono text-xs">
-                        {item.payload.slice(0, 800)}
-                      </pre>
-                    ) : null}
-                  </div>
-                ))}
-                {!events.length && (
-                  <p className="font-mono text-xs text-muted-foreground">No events yet.</p>
-                )}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
-      </TabsContent>
+          <TabsContent value="trace" className="mt-0">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="text-[15px] font-semibold">Observable actions</h2>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Switch checked={showRaw} onCheckedChange={setShowRaw} />
+                Raw payloads
+              </label>
+            </div>
+            <div className="rounded-[var(--radius-well)] border border-border bg-[var(--inset)]">
+              {events.filter(interesting).length === 0 ? (
+                <p className="px-3 py-3 text-sm text-muted-foreground">
+                  No events yet. Sends and tool calls show up here.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {events.filter(interesting).map((item) => (
+                    <li key={item.id} className="px-3 py-2">
+                      <div className="machine">
+                        <span className="text-muted-foreground">{item.id}</span> {eventLabel(item)}
+                      </div>
+                      {showRaw ? (
+                        <pre className="machine mt-1 max-h-28 overflow-auto text-muted-foreground">
+                          {item.payload.slice(0, 800)}
+                        </pre>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </TabsContent>
+        </div>
+      </ScrollArea>
     </Tabs>
   );
 }

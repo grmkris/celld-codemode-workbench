@@ -1,23 +1,27 @@
-import { useCallback, useEffect, useState } from "react";
-import { ApprovalsCard } from "@/components/approvals-card";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import { ChatPane } from "@/components/chat-pane";
-import { ChatsList } from "@/components/chats-list";
 import { LoginForm } from "@/components/login-form";
-import { NotificationsCard } from "@/components/notifications-card";
 import { PromptForm } from "@/components/prompt-form";
+import { RunStrip } from "@/components/run-strip";
+import { SessionHeader } from "@/components/session-header";
+import { SessionRail } from "@/components/session-rail";
 import { StatePanels } from "@/components/state-panels";
-import { StatusPills } from "@/components/status-pills";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { CHAT_STORAGE_KEY, readInitialChatId, useWorkbench } from "@/hooks/useWorkbench";
 import { api } from "@/lib/api";
 import type { ChatSummary, EventRow, Panel } from "@/lib/types";
-import { ChatPreview } from "@/preview/ChatPreview";
+import { cn } from "@/lib/utils";
+
+const ChatPreview = lazy(() =>
+  import("@/preview/ChatPreview").then((mod) => ({ default: mod.ChatPreview })),
+);
 
 export function App() {
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "1") {
-    return <ChatPreview />;
+    return (
+      <Suspense fallback={<p className="p-6 text-sm text-muted-foreground">Loading preview…</p>}>
+        <ChatPreview />
+      </Suspense>
+    );
   }
   return <Workbench />;
 }
@@ -31,6 +35,7 @@ function Workbench() {
     "Remember that this project's priority is reliability. Create three maintenance tasks.",
   );
   const [panel, setPanel] = useState<Panel>("memory");
+  const [inspectorOpen, setInspectorOpen] = useState(true);
 
   const {
     snapshot,
@@ -85,7 +90,26 @@ function Workbench() {
   useEffect(() => {
     if (!token) return;
     void refreshChats()
-      .then((list) => {
+      .then(async (list) => {
+        if (list.length === 0) {
+          setBusy(true);
+          try {
+            const data = await api<{ chat: ChatSummary }>("/api/chats", {
+              method: "POST",
+              token,
+              body: JSON.stringify({}),
+            });
+            const next = await refreshChats();
+            setChats(next);
+            selectChat(data.chat.id);
+            setError(null);
+          } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setBusy(false);
+          }
+          return;
+        }
         setAgentId((current) => {
           if (list.some((chat) => chat.id === current)) return current;
           const next = list[0]?.id;
@@ -99,7 +123,7 @@ function Workbench() {
         });
       })
       .catch((err: Error) => setError(err.message));
-  }, [token, refreshChats, setError, resetChatState]);
+  }, [token, refreshChats, setError, resetChatState, selectChat, setBusy]);
 
   useEffect(() => {
     if (!token) return undefined;
@@ -137,6 +161,13 @@ function Workbench() {
     return () => window.clearInterval(id);
   }, [token, refreshChats]);
 
+  // Default inspector tab: Trace while running, State otherwise.
+  useEffect(() => {
+    if (runStatus === "running" || runStatus === "queued") {
+      setPanel("trace");
+    }
+  }, [runStatus]);
+
   const createChat = () => {
     setError(null);
     setBusy(true);
@@ -152,6 +183,9 @@ function Workbench() {
       .catch((err: Error) => setError(err.message))
       .finally(() => setBusy(false));
   };
+
+  const activeChat = chats.find((chat) => chat.id === agentId);
+  const sessionTitle = activeChat?.title || agentId.slice(0, 12) || "Chat";
 
   if (!token) {
     return (
@@ -169,59 +203,47 @@ function Workbench() {
   }
 
   return (
-    <div className="grid min-h-screen lg:grid-cols-[300px_1fr_380px]">
-      <aside className="flex flex-col gap-4 border-r border-border p-5">
-        <div>
-          <h1 className="font-serif text-2xl font-bold">Application agent</h1>
-          <p className="font-mono text-xs text-muted-foreground">
-            {sessionOwner || ownerId}/{agentId}
-          </p>
-        </div>
-        <StatusPills
-          connected={connected}
+    <div className="flex min-h-screen bg-[var(--bench)]">
+      <SessionRail
+        chats={chats}
+        activeId={agentId}
+        busy={busy}
+        approvalCount={snapshot?.approvals?.length ?? 0}
+        onSelect={selectChat}
+        onCreate={createChat}
+        onLeave={() => {
+          localStorage.removeItem("celld_token");
+          setToken("");
+          resetChatState();
+          setChats([]);
+        }}
+      />
+
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        <SessionHeader
+          title={sessionTitle}
+          ownerId={sessionOwner || ownerId}
+          agentId={agentId}
+          inspectorOpen={inspectorOpen}
+          onToggleInspector={() => setInspectorOpen((open) => !open)}
+        />
+        <RunStrip
+          runStatus={runStatus}
           live={live}
           provider={provider}
-          runStatus={runStatus}
           model={session?.model}
+          connected={connected}
+          onStop={() => void stop()}
         />
-        <Separator />
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="flex flex-col gap-3 pr-2">
-            <ChatsList
-              chats={chats}
-              activeId={agentId}
-              busy={busy}
-              onSelect={selectChat}
-              onCreate={createChat}
-            />
-            <ApprovalsCard
-              approvals={snapshot?.approvals ?? []}
-              onDecide={(id, decision) => void decideApproval(id, decision)}
-            />
-            <NotificationsCard notifications={snapshot?.notifications ?? []} />
-          </div>
-        </ScrollArea>
-        <Button
-          variant="outline"
-          onClick={() => {
-            localStorage.removeItem("celld_token");
-            setToken("");
-            resetChatState();
-            setChats([]);
-          }}
-        >
-          Leave
-        </Button>
-      </aside>
-
-      <main className="flex min-h-screen min-w-0 flex-col">
         <div className="flex min-h-0 flex-1 flex-col">
           <ChatPane
             messages={snapshot?.messages ?? []}
+            approvals={snapshot?.approvals ?? []}
             runStatus={runStatus}
             runError={String(snapshot?.run?.error ?? "")}
             error={error}
             onPickSuggestion={setText}
+            onDecide={(id, decision) => void decideApproval(id, decision)}
           />
         </div>
         <PromptForm
@@ -235,25 +257,44 @@ function Workbench() {
             setText("");
             void send(next).then(() => refreshChats().catch(() => undefined));
           }}
-          onStop={() => void stop()}
         />
       </main>
 
-      <aside className="border-t border-border p-5 lg:border-t-0 lg:border-l">
-        <StatePanels
-          snapshot={snapshot}
-          events={events}
-          executions={executions}
-          openTasks={openTasks}
-          doneTasks={doneTasks}
-          activeByName={activeByName}
-          panel={panel}
-          onPanel={setPanel}
-          base={base}
-          token={token}
-          onRefresh={() => void refresh()}
-          onClearWorkspace={() => void clearWorkspace()}
+      {/* Inspector drawer — overlay below lg */}
+      {inspectorOpen ? (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+          onClick={() => setInspectorOpen(false)}
+          aria-hidden="true"
         />
+      ) : null}
+      <aside
+        className={cn(
+          "flex shrink-0 flex-col border-l border-border bg-[var(--raised)] transition-[width,transform]",
+          "fixed inset-y-0 right-0 z-50 w-[min(100vw,22rem)] lg:static lg:z-auto",
+          inspectorOpen
+            ? "translate-x-0 lg:w-[22rem]"
+            : "pointer-events-none translate-x-full lg:pointer-events-none lg:w-0 lg:translate-x-0 lg:border-0 lg:overflow-hidden",
+        )}
+        aria-hidden={!inspectorOpen}
+      >
+        <div className={cn("flex min-h-0 flex-1 flex-col p-4", !inspectorOpen && "lg:hidden")}>
+          <StatePanels
+            snapshot={snapshot}
+            events={events}
+            executions={executions}
+            openTasks={openTasks}
+            doneTasks={doneTasks}
+            activeByName={activeByName}
+            panel={panel}
+            onPanel={setPanel}
+            base={base}
+            token={token}
+            onRefresh={() => void refresh()}
+            onClearWorkspace={() => void clearWorkspace()}
+            notifications={snapshot?.notifications ?? []}
+          />
+        </div>
       </aside>
     </div>
   );

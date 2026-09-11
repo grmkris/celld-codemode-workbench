@@ -44,6 +44,7 @@ export function useWorkbench(agentId: string, token: string) {
     setSnapshot(data);
     setCursor(data.latestEventId);
     setConnected(true);
+    setError(null);
   }, [base, token]);
 
   useEffect(() => {

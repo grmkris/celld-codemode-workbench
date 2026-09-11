@@ -1,34 +1,28 @@
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
 import { Markdown } from "@/components/markdown";
 import type { SnapshotMessage } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export function ChatMessage({ message }: { message: SnapshotMessage }) {
   const isUser = message.role === "user";
+
   if (isUser) {
     return (
-      <Message align="end">
-        <MessageContent>
-          <MessageHeader className="justify-end">{message.role}</MessageHeader>
-          <Bubble variant="default" align="end">
-            <BubbleContent>
-              <Markdown content={message.content} />
-            </BubbleContent>
-          </Bubble>
-        </MessageContent>
-      </Message>
+      <div className="flex justify-end">
+        <div
+          className={cn(
+            "max-w-[min(68ch,85%)] rounded-[var(--radius-card)] border border-[var(--ember)]/35",
+            "bg-[var(--ember)]/15 px-3.5 py-2.5 text-[15px] leading-relaxed",
+          )}
+        >
+          <Markdown content={message.content} />
+        </div>
+      </div>
     );
   }
+
   return (
-    <Message align="start">
-      <MessageContent>
-        <MessageHeader>{message.role}</MessageHeader>
-        <Bubble variant="secondary" align="start" className="max-w-full">
-          <BubbleContent className="max-w-full">
-            <Markdown content={message.content} />
-          </BubbleContent>
-        </Bubble>
-      </MessageContent>
-    </Message>
+    <div className="w-full max-w-[68ch] text-[15px] leading-relaxed">
+      <Markdown content={message.content} />
+    </div>
   );
 }

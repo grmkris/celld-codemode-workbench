@@ -1,8 +1,7 @@
 import { useChat } from "@tanstack/ai-react";
 import { ArrowUpIcon } from "lucide-react";
+import { useState } from "react";
 import { Markdown } from "@/components/markdown";
-import { Badge } from "@/components/ui/badge";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import {
   InputGroup,
@@ -10,8 +9,6 @@ import {
   InputGroupButton,
   InputGroupTextarea,
 } from "@/components/ui/input-group";
-import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
-import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -20,13 +17,13 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import { useState } from "react";
+import { cn } from "@/lib/utils";
 import { previewChat, previewConnection, previewInitialMessages } from "./chat-fixture";
 
 /**
- * DEV-only deterministic chat preview. Same Bubble/Message primitives as
- * prod ChatPane, but driven by @shadcn/helpers/tanstack-ai local transport.
- * Never ships in prod (guarded by import.meta.env.DEV + ?preview=1).
+ * DEV-only deterministic chat preview. Same voice as prod ChatPane,
+ * driven by @shadcn/helpers/tanstack-ai local transport.
+ * Guarded by import.meta.env.DEV + ?preview=1.
  */
 export function ChatPreview() {
   const { messages, append, sendMessage, status } = useChat({
@@ -38,12 +35,9 @@ export function ChatPreview() {
   const isBusy = status === "submitted" || status === "streaming";
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-3xl flex-col">
-      <div className="flex items-center gap-2 border-b border-border p-4">
-        <Badge variant="secondary">preview</Badge>
-        <span className="font-mono text-xs text-muted-foreground">
-          Offline deterministic chat · no model, no network
-        </span>
+    <div className="mx-auto flex min-h-screen max-w-3xl flex-col bg-[var(--bench)]">
+      <div className="flex items-center gap-3 border-b border-border px-5 py-3">
+        <span className="machine text-muted-foreground">preview — offline, no model</span>
         <Button
           size="sm"
           variant="outline"
@@ -59,61 +53,63 @@ export function ChatPreview() {
 
       <MessageScrollerProvider>
         <MessageScroller className="flex-1">
-          <MessageScrollerViewport className="p-6">
-            <MessageScrollerContent>
+          <MessageScrollerViewport className="px-5 py-5">
+            <MessageScrollerContent className="gap-6">
               {messages.map((message) => (
                 <MessageScrollerItem
                   key={message.id}
                   id={message.id}
                   scrollAnchor={message.role === "user"}
                 >
-                  <Message align={message.role === "user" ? "end" : "start"}>
-                    <MessageContent>
-                      <MessageHeader>{message.role}</MessageHeader>
+                  {message.role === "user" ? (
+                    <div className="flex justify-end">
+                      <div
+                        className={cn(
+                          "max-w-[min(68ch,85%)] rounded-[var(--radius-card)] border border-[var(--ember)]/35",
+                          "bg-[var(--ember)]/15 px-3.5 py-2.5 text-[15px] leading-relaxed",
+                        )}
+                      >
+                        {message.parts.map((part, index) =>
+                          part.type === "text" ? (
+                            <Markdown key={index} content={part.content} />
+                          ) : null,
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex w-full max-w-[68ch] flex-col gap-2 text-[15px] leading-relaxed">
                       {message.parts.map((part, index) => {
                         if (part.type === "text") {
-                          return (
-                            <Bubble
-                              key={index}
-                              variant={message.role === "user" ? "default" : "secondary"}
-                            >
-                              <BubbleContent>
-                                <Markdown content={part.content} />
-                              </BubbleContent>
-                            </Bubble>
-                          );
+                          return <Markdown key={index} content={part.content} />;
                         }
                         if (part.type === "thinking") {
                           return (
-                            <Marker key={index}>
-                              <MarkerIcon>💭</MarkerIcon>
-                              <MarkerContent className="font-mono text-xs">
-                                {part.content}
-                              </MarkerContent>
-                            </Marker>
+                            <p key={index} className="text-sm text-muted-foreground italic">
+                              {part.content}
+                            </p>
                           );
                         }
                         if (part.type === "tool-call") {
                           return (
-                            <Bubble key={index} variant="outline">
-                              <BubbleContent>
-                                <span className="font-mono text-xs">
-                                  tool: {"name" in part ? String(part.name) : "tool"}
-                                </span>
-                              </BubbleContent>
-                            </Bubble>
+                            <div
+                              key={index}
+                              className="machine rounded-[var(--radius-well)] border border-border bg-[var(--inset)] px-3 py-2 text-muted-foreground"
+                            >
+                              tool: {"name" in part ? String(part.name) : "tool"}
+                            </div>
                           );
                         }
                         return null;
                       })}
-                    </MessageContent>
-                  </Message>
+                    </div>
+                  )}
                 </MessageScrollerItem>
               ))}
               {isBusy ? (
-                <Marker role="status">
-                  <MarkerContent>Streaming…</MarkerContent>
-                </Marker>
+                <div className="max-w-[68ch] text-[15px] text-muted-foreground" role="status">
+                  Working
+                  <span className="streaming-caret" aria-hidden="true" />
+                </div>
               ) : null}
             </MessageScrollerContent>
           </MessageScrollerViewport>
@@ -122,7 +118,7 @@ export function ChatPreview() {
       </MessageScrollerProvider>
 
       <form
-        className="border-t border-border p-4"
+        className="border-t border-border bg-[var(--raised)]/40 px-5 py-4"
         onSubmit={(event) => {
           event.preventDefault();
           if (!input.trim() || isBusy) return;
@@ -131,7 +127,7 @@ export function ChatPreview() {
           void sendMessage(next);
         }}
       >
-        <InputGroup>
+        <InputGroup className="rounded-[var(--radius-card)] border-border bg-[var(--inset)]">
           <InputGroupTextarea
             rows={2}
             value={input}
