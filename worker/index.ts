@@ -6,6 +6,7 @@ import type { Env } from "./env";
 import wasmModule from "./vendor/emscripten-module.wasm";
 
 export { AgentCell } from "./agent-cell";
+export { DirectoryCell } from "./directory-cell";
 export { ProbeCell } from "./probe";
 
 configureQuickJSWasm(wasmModule);
@@ -30,6 +31,12 @@ async function assetFallback(request: Request, env: Env): Promise<Response> {
   return env.ASSETS.fetch(request);
 }
 
+function modelFor(env: Env): string | undefined {
+  if (env.MODEL_PROVIDER === "alibaba") return env.ALIBABA_MODEL ?? "qwen3.8-max";
+  if (env.MODEL_PROVIDER === "grok") return env.XAI_MODEL;
+  return env.OPENAI_MODEL;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -39,12 +46,7 @@ export default {
         service: "celld-app-agent",
         celld: "v0.4.1",
         provider: env.MODEL_PROVIDER ?? "fixture",
-        model:
-          env.MODEL_PROVIDER === "alibaba"
-            ? (env.ALIBABA_MODEL ?? "qwen3.8-max")
-            : env.MODEL_PROVIDER === "grok"
-              ? env.XAI_MODEL
-              : env.OPENAI_MODEL,
+        model: modelFor(env),
         live: isLiveProvider(env),
         hasAlibabaKey: Boolean(env.ALIBABA_TOKEN_PLAN_API_KEY),
       });
@@ -70,12 +72,7 @@ export default {
         return json({
           ownerId: session.ownerId,
           provider: env.MODEL_PROVIDER ?? "fixture",
-          model:
-            env.MODEL_PROVIDER === "alibaba"
-              ? (env.ALIBABA_MODEL ?? "qwen3.8-max")
-              : env.MODEL_PROVIDER === "grok"
-                ? env.XAI_MODEL
-                : env.OPENAI_MODEL,
+          model: modelFor(env),
           live: isLiveProvider(env),
         });
       }
@@ -83,6 +80,15 @@ export default {
       if (url.pathname === "/api/probe") {
         const id = env.PROBE.idFromName(`probe:${session.ownerId}:${Date.now()}`);
         return env.PROBE.get(id).fetch(request);
+      }
+
+      if (url.pathname === "/api/chats" || url.pathname.startsWith("/api/chats/")) {
+        const rest = url.pathname === "/api/chats" ? "/chats" : url.pathname.slice("/api".length);
+        const id = env.DIRECTORY.idFromName(session.ownerId);
+        const stub = env.DIRECTORY.get(id);
+        const forwarded = new Request(new URL(rest + url.search, request.url), request);
+        forwarded.headers.set("x-celld-owner", session.ownerId);
+        return stub.fetch(forwarded);
       }
 
       const match = url.pathname.match(/^\/api\/agents\/([^/]+)(\/.*)?$/);

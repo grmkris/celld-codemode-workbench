@@ -11,7 +11,10 @@
     "types": ["@cloudflare/workers-types", "vite/client"],
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./ui/src/*"]
+    }
   },
   "include": ["worker", "ui", "tests/unit", "shared"]
 }

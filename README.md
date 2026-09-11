@@ -13,7 +13,8 @@ private.
 
 ```
 UI / authenticated HTTP
-  → AgentCell (state, admission, scheduling, recovery)
+  → DirectoryCell (chat index per owner)
+  → AgentCell (one chat cell: state, admission, scheduling, recovery)
     → TanStack AI loop
       → Code Mode in a restricted isolate
         → host capabilities (Effect-backed notify/approval path)

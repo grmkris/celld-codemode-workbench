@@ -21,6 +21,8 @@ export class AgentCell {
   private readonly store: Store;
   private abort: AbortController | null = null;
   private currentGeneration = 0;
+  private ownerId = "";
+  private agentId = "default";
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -39,27 +41,46 @@ export class AgentCell {
     if (!validAgentId(agentId)) {
       return json({ error: "invalid agent id" }, 400);
     }
-    this.store.ensureAgent(ownerId, agentId, agentId);
-    if (request.method !== "GET") this.recoverOrContinue();
+    this.ownerId = ownerId;
+    this.agentId = agentId;
 
     try {
+      if (request.method === "POST" && url.pathname === "/bootstrap") {
+        const body = (await request.json().catch(() => ({}))) as { name?: string };
+        return this.bootstrap(body);
+      }
+
+      if (!this.store.agent()) {
+        return json({ error: "chat not found", code: "not_found" }, 404);
+      }
+      if (this.isArchived() && url.pathname !== "/snapshot" && url.pathname !== "/events") {
+        return json({ error: "chat archived", code: "gone" }, 410);
+      }
+      if (request.method !== "GET") this.recoverOrContinue();
+
       if (request.method === "GET" && url.pathname === "/snapshot") {
         return json(this.snapshot());
       }
       if (request.method === "GET" && url.pathname === "/events") {
-        return this.events(url);
+        return await this.events(url);
+      }
+      if (request.method === "POST" && url.pathname === "/archive") {
+        return this.markArchived();
       }
       if (request.method === "POST" && url.pathname === "/chat") {
-        return this.chat(await request.json());
+        return await this.chat(await request.json());
       }
       if (request.method === "POST" && url.pathname === "/stop") {
         return this.stop();
       }
+      if (request.method === "POST" && url.pathname === "/reset") {
+        return await this.resetWorkspace(await request.json());
+      }
       if (request.method === "POST" && url.pathname === "/approvals") {
-        return this.decideApproval(await request.json());
+        return await this.decideApproval(await request.json());
       }
       if (request.method === "POST" && url.pathname === "/snippets/invoke") {
-        return this.invokeSnippet(await request.json());
+        return await this.invokeSnippet(await request.json());
       }
       if (request.method === "POST" && url.pathname === "/snippets/activate") {
         return this.activateSnippet(await request.json());
@@ -68,10 +89,10 @@ export class AgentCell {
         return this.rollbackSnippet(await request.json());
       }
       if (request.method === "POST" && url.pathname === "/schedules") {
-        return this.createSchedule(await request.json());
+        return await this.createSchedule(await request.json());
       }
       if (request.method === "POST" && url.pathname === "/schedules/pause") {
-        return this.pauseSchedule(await request.json());
+        return await this.pauseSchedule(await request.json());
       }
       if (request.method === "POST" && url.pathname === "/capabilities") {
         return this.setCapabilities(await request.json());
@@ -81,7 +102,7 @@ export class AgentCell {
         request.method === "POST" &&
         url.pathname === "/test/crash"
       ) {
-        return this.testCrash(await request.json());
+        return await this.testCrash(await request.json());
       }
       return json({ error: "not found" }, 404);
     } catch (error) {
@@ -157,10 +178,39 @@ export class AgentCell {
     await this.armAlarm();
   }
 
+  private bootstrap(body: { name?: string }): Response {
+    if (this.isArchived()) {
+      return json({ error: "chat archived", code: "gone" }, 410);
+    }
+    const name = String(body.name ?? this.agentId);
+    this.store.ensureAgent(this.ownerId, this.agentId, name);
+    this.pushActivity("idle");
+    return json({ ok: true, agentId: this.agentId });
+  }
+
+  private markArchived(): Response {
+    this.store.sql.exec(
+      "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      "archived",
+      "1",
+    );
+    this.abort?.abort("archived");
+    return json({ ok: true, archived: true });
+  }
+
+  private isArchived(): boolean {
+    const row = this.store.sql.one<{ value: string }>(
+      "SELECT value FROM meta WHERE key = ?",
+      "archived",
+    );
+    return row?.value === "1";
+  }
+
   private snapshot() {
     const agent = this.store.agent();
     return {
       agent,
+      archived: this.isArchived(),
       activeRun: this.store.activeRun(),
       run: this.store.activeRun() ?? this.store.lastRun(),
       messages: this.store.messages(),
@@ -203,11 +253,13 @@ export class AgentCell {
       }
       const id = this.store.enqueue(text);
       this.store.addEvent(String(active.id), "run.queued", { id, text });
+      this.pushActivity(String(active.status ?? "running"));
       return json({ queued: true, id, activeRunId: active.id }, 202);
     }
     const admitted = this.store.admitRun(text);
     this.currentGeneration = admitted.generation;
     this.abort = new AbortController();
+    this.pushActivity("running");
     this.ctx.waitUntil(this.process(admitted.id, admitted.generation, text));
     return json({ queued: false, runId: admitted.id, generation: admitted.generation }, 202);
   }
@@ -225,6 +277,7 @@ export class AgentCell {
       this.store.addEvent(String(active.id), "run.recovered", {
         reason: "unowned running work was not replayed",
       });
+      this.pushActivity("failed");
     }
     const next = this.store.nextQueued();
     if (next && !this.store.activeRun()) {
@@ -232,6 +285,7 @@ export class AgentCell {
       const admitted = this.store.admitRun(next.user_text);
       this.currentGeneration = admitted.generation;
       this.abort = new AbortController();
+      this.pushActivity("running");
       this.ctx.waitUntil(this.process(admitted.id, admitted.generation, next.user_text));
     }
   }
@@ -242,9 +296,12 @@ export class AgentCell {
       if (current && Number(current.cancel_requested)) {
         this.store.confirmTerminated(runId, "cancelled before start");
         this.store.addEvent(runId, "run.terminated", { reason: "cancelled before start" });
+        this.pushActivity("terminated");
         return;
       }
       await runConversation(this.runtimeOptions({ runId, generation, mode: "live" }), text);
+      const finished = this.store.run(runId);
+      this.pushActivity(String(finished?.status ?? "completed"));
     } finally {
       this.abort = null;
       const next = this.store.nextQueued();
@@ -253,7 +310,11 @@ export class AgentCell {
         const admitted = this.store.admitRun(next.user_text);
         this.currentGeneration = admitted.generation;
         this.abort = new AbortController();
+        this.pushActivity("running");
         this.ctx.waitUntil(this.process(admitted.id, admitted.generation, next.user_text));
+      } else if (!this.store.activeRun()) {
+        const last = this.store.lastRun();
+        this.pushActivity(String(last?.status ?? "idle"));
       }
       await this.armAlarm();
     }
@@ -265,11 +326,59 @@ export class AgentCell {
     this.store.requestCancel(String(active.id));
     this.store.addEvent(String(active.id), "run.cancel_requested", {});
     this.abort?.abort("stop");
+    this.pushActivity("cancel_requested");
     return json({
       status: "cancel_requested",
       runId: active.id,
       note: "Already-accepted external effects are not undone",
     });
+  }
+
+  private pushActivity(runStatus: string): void {
+    const ownerId = String(this.store.agent()?.owner_id ?? this.ownerId);
+    const agentId = String(this.store.agent()?.id ?? this.agentId);
+    if (!ownerId || !this.env.DIRECTORY) return;
+    const last = this.store.sql.one<{ content: string; seq: number; role: string }>(
+      "SELECT content, seq, role FROM messages ORDER BY seq DESC LIMIT 1",
+    );
+    let lastMessage = "";
+    if (last) {
+      try {
+        const parsed = JSON.parse(String(last.content));
+        lastMessage =
+          typeof parsed === "string"
+            ? parsed
+            : JSON.stringify(parsed).slice(0, LIMITS.chatPreviewBytes);
+      } catch {
+        lastMessage = String(last.content).slice(0, LIMITS.chatPreviewBytes);
+      }
+    }
+    const lastSeq = Number(last?.seq ?? 0);
+    const payload = {
+      chatId: agentId,
+      lastMessage,
+      lastSeq,
+      runStatus,
+    };
+    this.ctx.waitUntil(
+      (async () => {
+        try {
+          const id = this.env.DIRECTORY.idFromName(ownerId);
+          await this.env.DIRECTORY.get(id).fetch(
+            new Request("https://directory.internal/activity", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-celld-owner": ownerId,
+              },
+              body: JSON.stringify(payload),
+            }),
+          );
+        } catch {
+          // Index can stay stale until the next chat event.
+        }
+      })(),
+    );
   }
 
   private approvalContext(): HostContext {
@@ -324,6 +433,8 @@ export class AgentCell {
         });
       }
     }
+    const active = this.store.activeRun();
+    this.pushActivity(String(active?.status ?? this.store.lastRun()?.status ?? "idle"));
     return json(result);
   }
 
@@ -393,6 +504,19 @@ export class AgentCell {
     });
     await this.armAlarm();
     return json(this.store.schedule(String(body.id)));
+  }
+
+  private async resetWorkspace(body: { confirm?: boolean }): Promise<Response> {
+    if (body.confirm !== true) {
+      throw new HostError("invalid", "reset requires confirm=true", 400);
+    }
+    if (this.store.activeRun()) {
+      throw new HostError("conflict", "Stop the run before clearing application state", 409);
+    }
+    const result = this.store.clearApplicationState();
+    this.store.addEvent(null, "workspace.reset", result);
+    await this.armAlarm();
+    return json(result);
   }
 
   private setCapabilities(body: { capabilities?: string[] }): Response {

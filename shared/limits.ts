@@ -27,6 +27,9 @@ export const LIMITS = {
   queuedMessages: 8,
   preferencesBytes: 2_048,
   notifyMessageBytes: 2_048,
+  chatsPerOwner: 32,
+  chatTitleBytes: 120,
+  chatPreviewBytes: 240,
 } as const;
 
 export const LOW_RISK_CAPABILITIES = [

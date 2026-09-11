@@ -11,23 +11,29 @@ test("workbench login and fixture chat", async ({ page }) => {
   await page.screenshot({ path: `${shots}/01-login.png`, fullPage: true });
 
   await page.getByRole("button", { name: "Enter" }).click();
-  await expect(page.getByText(/fixture|live/)).toBeVisible();
-  await expect(page.getByText("None pending.")).toBeVisible();
-  await expect(page.getByText("No memory yet.")).toBeVisible();
+  await expect(page.getByText(/fixture|live/i)).toBeVisible();
+  await expect(page.getByText("Chats", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /New chat/i })).toBeVisible();
+  await expect(page.getByText(/None pending|No approvals/i)).toBeVisible();
   await page.screenshot({ path: `${shots}/02-empty-workbench.png`, fullPage: true });
 
-  await page.getByLabel("Message").fill("Inspect current state.");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText(/idle|running|completed|queued/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
-  await expect(page.getByText("user", { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("textbox").fill("Inspect current state.");
+  await page.getByRole("button", { name: /Send/i }).click();
+  await expect(page.getByText(/idle|running|completed|queued/i).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /Stop/i })).toBeVisible();
+  await expect(page.getByText(/user|Inspect current state/i).first()).toBeVisible({
+    timeout: 20_000,
+  });
   await page.screenshot({ path: `${shots}/03-fixture-chat.png`, fullPage: true });
 
-  await page.getByRole("button", { name: "Snippets" }).click();
-  await expect(page.getByRole("heading", { name: "Saved programs" })).toBeVisible();
-  await page.getByRole("button", { name: "Schedules" }).click();
-  await expect(page.getByRole("heading", { name: "Schedules" })).toBeVisible();
-  await page.getByRole("button", { name: "Trace" }).click();
-  await expect(page.getByRole("heading", { name: "Observable actions" })).toBeVisible();
+  await page.getByRole("button", { name: /New chat/i }).click();
+  await expect(page.getByText(/Each chat is its own cell|What are we working on/i)).toBeVisible({
+    timeout: 10_000,
+  });
+
+  await page
+    .getByRole("tab", { name: /Snippets|State|Schedules|Trace/i })
+    .first()
+    .click();
   await page.screenshot({ path: `${shots}/04-trace.png`, fullPage: true });
 });

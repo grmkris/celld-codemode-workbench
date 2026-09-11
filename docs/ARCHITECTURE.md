@@ -1,18 +1,36 @@
 # Architecture
 
-The application is one Cloudflare-compatible Worker plus two Durable Object
+The application is one Cloudflare-compatible Worker plus three Durable Object
 classes. It is intended to run on **celld**, not on a Node process.
 
 ```
 UI (static assets)
   → Worker (auth, routing)
-    → AgentCell (one per owner:agent)
+    → DirectoryCell (one per owner — chat index)
+    → AgentCell (one per owner:chat — transcript, runs, app state)
         → TanStack AI chat loop
             → execute_typescript
                 → fuel-budget QuickJS WASM isolate
                     → host capabilities (SQL, approvals, schedules)
     → ProbeCell (disposable containment runs)
 ```
+
+## Multiple chats
+
+Each chat is its own **AgentCell** (`idFromName(ownerId:chatId)`). The
+**DirectoryCell** (`idFromName(ownerId)`) owns the chat list: create, rename,
+archive, and fenced activity previews (title / last message / run status).
+Listing never wakes every chat. Durable Objects cannot be enumerated from the
+Worker; do not proxy celld's operator `celld cell list` API.
+
+Chats are created only through `POST /api/chats` (which bootstraps the
+AgentCell). Hitting `/api/agents/:id` for an unknown id returns 404. The first
+directory access seeds a `default` chat so existing workbench state remains
+reachable.
+
+Activity pushes use a message-seq fence: a delayed preview cannot overwrite a
+newer one, and an archived chat rejects resurrection. v1 keeps memory, tasks,
+snippets, and schedules **per chat**; shared memory across chats is a follow-up.
 
 ## Trust boundary
 
@@ -29,7 +47,7 @@ credentials, disable auth, or raise quotas.
 
 Each AgentCell owns a SQLite database (`new_sqlite_classes`). Control tables
 are not exposed through a generic query tool. Schema lives in
-`worker/schema.ts`.
+`worker/schema.ts`. Directory schema lives in `worker/directory-schema.ts`.
 
 Recoverable boundaries are **model turns** and **capability effects**, not a
 JavaScript stack. If a Code Mode program is interrupted, the next turn inspects
@@ -37,8 +55,10 @@ the journal instead of replaying the program.
 
 ## Admission and fencing
 
-One conversational run is active at a time. Extra messages are queued. Each
-run has a generation. Stale callbacks after Stop or recovery cannot commit.
+One conversational run is active at a time **per chat cell**. Extra messages
+on that cell are queued. Each run has a generation. Stale callbacks after Stop
+or recovery cannot commit. Separate chats run in parallel because they are
+separate cells.
 
 `ctx.waitUntil` continues the model/tool loop after the HTTP response.
 Disconnecting the UI is not Stop. Stop persists `cancel_requested`, aborts the

@@ -1,0 +1,27 @@
+/* Minimal typeset for assistant markdown: inherits workbench serif/mono. */
+.typeset {
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.typeset pre,
+.typeset code {
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+}
+
+.typeset pre {
+  background: #120f0c;
+  border: 1px solid var(--line);
+  padding: 0.6rem 0.7rem;
+  overflow-x: auto;
+}
+
+.typeset p {
+  margin: 0 0 0.6rem;
+}
+
+.typeset p:last-child {
+  margin-bottom: 0;
+}

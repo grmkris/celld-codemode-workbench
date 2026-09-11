@@ -265,6 +265,41 @@ export class Store {
     return id;
   }
 
+  deleteTask(id: string): boolean {
+    if (!this.task(id)) return false;
+    this.sql.exec("DELETE FROM tasks WHERE id = ?", id);
+    return true;
+  }
+
+  clearApplicationState() {
+    return this.sql.transaction(() => {
+      const memoryDeleted = this.memoryCount();
+      const tasksDeleted = Number(
+        this.sql.one<{ n: number }>("SELECT COUNT(*) AS n FROM tasks")?.n ?? 0,
+      );
+      const snippetsDeactivated = Number(
+        this.sql.one<{ n: number }>("SELECT COUNT(*) AS n FROM snippet_activation")?.n ?? 0,
+      );
+      const schedulesCancelled = Number(
+        this.sql.one<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM schedules WHERE status IN ('active', 'paused')",
+        )?.n ?? 0,
+      );
+      this.sql.exec("DELETE FROM memory");
+      this.sql.exec("DELETE FROM tasks");
+      this.sql.exec("DELETE FROM snippet_activation");
+      this.sql.exec(
+        "UPDATE schedules SET status = 'cancelled' WHERE status IN ('active', 'paused')",
+      );
+      return {
+        memoryDeleted,
+        tasksDeleted,
+        snippetsDeactivated,
+        schedulesCancelled,
+      };
+    });
+  }
+
   updateTask(id: string, patch: { title?: string; status?: string; notes?: string }): void {
     const current = this.task(id);
     if (!current) return;

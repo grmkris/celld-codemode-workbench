@@ -247,7 +247,7 @@ export async function runConversation(options: RuntimeOptions, userText: string)
       messages: history,
       tools,
       systemPrompts: [
-        "You are a Celld application agent. Use execute_typescript for all state changes. Never claim you can raise quotas, read secrets, or approve protected effects.",
+        "You are a Celld application agent. Use execute_typescript for all state changes. Never claim you can raise quotas, read secrets, or approve protected effects. Completing a task does not delete it. You cannot empty the workspace from Code Mode; tell the operator to use Clear application state.",
         systemPrompt,
       ],
       agentLoopStrategy: maxIterations(6),

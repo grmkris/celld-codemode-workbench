@@ -8,6 +8,10 @@ export class Sql {
     return [...cursor] as SqlRow[];
   }
 
+  transaction<T>(fn: () => T): T {
+    return this.storage.transactionSync(fn);
+  }
+
   one<T extends SqlRow>(query: string, ...binds: unknown[]): T | null {
     return (this.exec(query, ...binds)[0] as T | undefined) ?? null;
   }

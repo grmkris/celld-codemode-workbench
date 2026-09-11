@@ -178,6 +178,20 @@ function auth(token) {
   return { authorization: `Bearer ${token}` };
 }
 
+async function ensureChat(token, id, title = id) {
+  const listed = await json("/api/chats", { headers: auth(token) });
+  if ((listed.body.chats ?? []).some((chat) => chat.id === id)) return id;
+  const created = await json("/api/chats", {
+    method: "POST",
+    headers: auth(token),
+    body: JSON.stringify({ id, title }),
+  });
+  if (!created.response.ok && created.response.status !== 409) {
+    throw new Error(created.body.error ?? `create chat ${id} failed`);
+  }
+  return id;
+}
+
 async function snapshot(token, id = agent) {
   const { body } = await json(`/api/agents/${id}/snapshot`, { headers: auth(token) });
   return body;
@@ -321,6 +335,7 @@ async function main() {
         return;
       }
       const liveAgent = `live${Date.now().toString(36)}`;
+      await ensureChat(token, liveAgent, "live-smoke");
       const liveChat = await json(`/api/agents/${liveAgent}/chat`, {
         method: "POST",
         headers: auth(token),
@@ -382,6 +397,11 @@ async function main() {
     });
     log("malformed-agent", malformed.response.status >= 400, `status ${malformed.response.status}`);
 
+    const unknown = await json(`/api/agents/missingchat/snapshot`, { headers: auth(token) });
+    log("unknown-chat-404", unknown.response.status === 404, `status ${unknown.response.status}`);
+
+    await ensureChat(token, agent, "e2e-main");
+
     const oversized = await json(`/api/agents/${agent}/chat`, {
       method: "POST",
       headers: auth(token),
@@ -391,6 +411,63 @@ async function main() {
       "oversized-message",
       oversized.response.status >= 400,
       `status ${oversized.response.status}`,
+    );
+
+    const chatA = `a${Date.now().toString(36)}`;
+    const chatB = `b${Date.now().toString(36)}`;
+    await ensureChat(token, chatA, "parallel-a");
+    await ensureChat(token, chatB, "parallel-b");
+    const [parA, parB] = await Promise.all([
+      json(`/api/agents/${chatA}/chat`, {
+        method: "POST",
+        headers: auth(token),
+        body: JSON.stringify({ text: "Inspect current state." }),
+      }),
+      json(`/api/agents/${chatB}/chat`, {
+        method: "POST",
+        headers: auth(token),
+        body: JSON.stringify({ text: "Inspect current state." }),
+      }),
+    ]);
+    await Promise.all([waitRunIdle(token, 25_000, chatA), waitRunIdle(token, 25_000, chatB)]);
+    const listed = await json("/api/chats", { headers: auth(token) });
+    const ids = (listed.body.chats ?? []).map((row) => row.id);
+    log(
+      "multi-chat-parallel",
+      (parA.response.status === 202 || parA.response.ok) &&
+        (parB.response.status === 202 || parB.response.ok) &&
+        ids.includes(chatA) &&
+        ids.includes(chatB),
+      `ids=${ids.join(",")}`,
+    );
+
+    const bobList = await json("/api/chats", { headers: auth(other) });
+    const bobSeesAlice = (bobList.body.chats ?? []).some(
+      (row) => row.id === chatA || row.id === agent,
+    );
+    log(
+      "multi-chat-cross-owner-list",
+      bobList.response.ok && !bobSeesAlice,
+      `bobCount=${bobList.body.chats?.length ?? 0}`,
+    );
+
+    const archiveTarget = `z${Date.now().toString(36)}`;
+    await ensureChat(token, archiveTarget, "to-archive");
+    const archived = await json(`/api/chats/${archiveTarget}/archive`, {
+      method: "POST",
+      headers: auth(token),
+    });
+    const afterArchive = await json(`/api/agents/${archiveTarget}/chat`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ text: "should fail" }),
+    });
+    const listAfter = await json("/api/chats", { headers: auth(token) });
+    const stillListed = (listAfter.body.chats ?? []).some((row) => row.id === archiveTarget);
+    log(
+      "multi-chat-archive",
+      archived.response.ok && afterArchive.response.status === 410 && !stillListed,
+      `archive=${archived.response.status} chat=${afterArchive.response.status} listed=${stillListed}`,
     );
 
     await json(`/api/agents/${agent}/chat`, {
@@ -670,6 +747,40 @@ async function main() {
     } else {
       log("schedule-revocation", true, "create rejected after revoke");
     }
+
+    const resetAgent = `rst${Date.now().toString(36)}`;
+    await ensureChat(token, resetAgent, "reset-agent");
+    await json(`/api/agents/${resetAgent}/chat`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({
+        text: "Remember that this project's priority is reliability. Create three maintenance tasks.",
+      }),
+    });
+    let resetSnap = await waitRunIdle(token, 25_000, resetAgent);
+    const seeded =
+      (resetSnap.tasks?.length ?? 0) >= 3 &&
+      (resetSnap.memory ?? []).some((row) => row.key === "project_priority");
+    const missingConfirm = await json(`/api/agents/${resetAgent}/reset`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({}),
+    });
+    const resetHttp = await json(`/api/agents/${resetAgent}/reset`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ confirm: true }),
+    });
+    resetSnap = await snapshot(token, resetAgent);
+    log(
+      "workspace-reset",
+      seeded &&
+        missingConfirm.response.status === 400 &&
+        resetHttp.response.ok &&
+        (resetSnap.memory?.length ?? 0) === 0 &&
+        (resetSnap.tasks?.length ?? 0) === 0,
+      `seeded=${seeded} confirm=${missingConfirm.response.status} memory=${resetSnap.memory?.length} tasks=${resetSnap.tasks?.length}`,
+    );
 
     log("live-provider-smoke", false, "UNRUN: pass --live-smoke with credentials");
 

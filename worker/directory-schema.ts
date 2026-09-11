@@ -1,0 +1,19 @@
+export const DIRECTORY_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chats (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  last_message TEXT NOT NULL DEFAULT '',
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  run_status TEXT NOT NULL DEFAULT 'idle',
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`;
+
+export const DIRECTORY_SCHEMA_VERSION = 1;

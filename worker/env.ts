@@ -1,5 +1,6 @@
 export interface Env {
   AGENT: DurableObjectNamespace;
+  DIRECTORY: DurableObjectNamespace;
   PROBE: DurableObjectNamespace;
   ASSETS?: Fetcher;
   AUTH_SECRET: string;

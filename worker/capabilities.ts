@@ -251,12 +251,38 @@ export function createCapabilityTools(store: Store, ctx: HostContext) {
 
   const tasksComplete = toolDefinition({
     name: "tasks_complete",
-    description: "Mark a task complete",
+    description: "Mark a task complete. This does not delete the task or empty the workspace.",
     inputSchema: z.object({ id: z.string() }),
   }).server(async ({ id }) => {
     requireCap(ctx, "tasks");
+    if (ctx.mode === "test" && ctx.scratch) {
+      const row = ctx.scratch.tasks.find((item) => item.id === id);
+      if (!row) throw new HostError("not_found", "Task not found", 404);
+      row.status = "done";
+      row.completed_at = Date.now();
+      row.updated_at = Date.now();
+      return row;
+    }
+    if (!store.task(id)) throw new HostError("not_found", "Task not found", 404);
     store.updateTask(id, { status: "done" });
     return store.task(id);
+  });
+
+  const tasksDelete = toolDefinition({
+    name: "tasks_delete",
+    description: "Permanently delete one task. Completing a task is a different operation.",
+    inputSchema: z.object({ id: z.string() }),
+  }).server(async ({ id }) => {
+    requireCap(ctx, "tasks");
+    if (ctx.mode === "test" && ctx.scratch) {
+      const index = ctx.scratch.tasks.findIndex((item) => item.id === id);
+      if (index < 0) throw new HostError("not_found", "Task not found", 404);
+      ctx.scratch.tasks.splice(index, 1);
+      return { deleted: id };
+    }
+    if (!store.deleteTask(id)) throw new HostError("not_found", "Task not found", 404);
+    ctx.record("tasks.delete", { id });
+    return { deleted: id };
   });
 
   const snippetsSearch = toolDefinition({
@@ -573,6 +599,7 @@ export function createCapabilityTools(store: Store, ctx: HostContext) {
     tasksList,
     tasksUpdate,
     tasksComplete,
+    tasksDelete,
     snippetsSearch,
     snippetsInspect,
     snippetsSave,
