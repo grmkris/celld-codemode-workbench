@@ -18,20 +18,20 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
-import { previewChat, previewConnection, previewInitialMessages } from "./chat-fixture";
+import { nextPreviewUserMessage, previewConnection, previewInitialMessages } from "./chat-fixture";
 
 /**
  * DEV-only deterministic chat preview. Same voice as prod ChatPane,
- * driven by @shadcn/helpers/tanstack-ai local transport.
+ * driven by static fixture messages (no @shadcn/helpers).
  * Guarded by import.meta.env.DEV + ?preview=1.
  */
 export function ChatPreview() {
-  const { messages, append, sendMessage, status } = useChat({
+  const { messages, sendMessage, status } = useChat({
     initialMessages: previewInitialMessages,
-    connection: previewConnection,
+    connection: previewConnection as never,
   });
   const [input, setInput] = useState("");
-  const nextMessage = previewChat.next(messages);
+  const nextMessage = nextPreviewUserMessage(messages);
   const isBusy = status === "submitted" || status === "streaming";
 
   return (
@@ -44,7 +44,7 @@ export function ChatPreview() {
           className="ml-auto"
           disabled={!nextMessage || isBusy}
           onClick={() => {
-            if (nextMessage && !isBusy) void append(nextMessage);
+            if (nextMessage && !isBusy) void sendMessage(nextMessage);
           }}
         >
           Send next scripted message

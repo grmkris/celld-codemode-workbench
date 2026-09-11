@@ -34,20 +34,37 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
-    "@shadcn/helpers": "^0.2.0",
+    "@durable-streams/client": "0.2.7",
+    "@durable-streams/server": "0.3.9",
+    "@durable-streams/state": "0.3.2",
+    "@durable-streams/tanstack-ai-transport": "0.0.10",
     "@shadcn/react": "^0.3.1",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/ai": "0.54.0",
+    "@tanstack/ai-claude-code": "0.6.5",
     "@tanstack/ai-client": "^0.31.1",
     "@tanstack/ai-code-mode": "0.4.9",
+    "@tanstack/ai-codex": "0.5.5",
     "@tanstack/ai-grok": "0.18.5",
+    "@tanstack/ai-grok-build": "0.5.5",
     "@tanstack/ai-isolate-quickjs": "0.3.1",
     "@tanstack/ai-openai": "0.22.6",
+    "@tanstack/ai-opencode": "0.4.5",
+    "@tanstack/ai-persistence": "0.5.7",
     "@tanstack/ai-react": "^0.24.1",
+    "@tanstack/ai-sandbox": "0.5.7",
+    "@tanstack/ai-sandbox-docker": "0.3.2",
+    "@tanstack/ai-sandbox-local-process": "0.2.5",
+    "@tanstack/db": "0.9.0",
+    "@tanstack/react-db": "0.3.8",
+    "@types/dockerode": "3.3.44",
+    "better-auth": "1.7.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cn": "^0.2.6",
+    "dockerode": "4.0.2",
     "effect": "4.0.0-rc.115",
+    "kysely": "0.28.8",
     "lucide-react": "^1.45.0",
     "quickjs-emscripten": "0.31.0",
     "react-markdown": "^10.1.0",
@@ -74,6 +91,14 @@
     "typescript": "5.9.2",
     "vite": "7.1.5",
     "vitest": "3.2.4"
+  },
+  "overrides": {
+    "@tanstack/ai-persistence": {
+      "vitest": "3.2.4"
+    },
+    "@tanstack/ai-sandbox": {
+      "vitest": "3.2.4"
+    }
   },
   "engines": {
     "node": ">=20"
