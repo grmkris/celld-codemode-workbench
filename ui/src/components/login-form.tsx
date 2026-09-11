@@ -54,7 +54,7 @@ export function LoginForm({ connected, health, error, onError, onToken }: Props)
             <Input
               value={ownerId}
               onChange={(event) => setOwnerId(event.target.value)}
-              className="bg-[var(--inset)]"
+              className="border-border bg-[var(--inset)]"
             />
           </label>
           <label className="flex flex-col gap-1.5 text-sm">
@@ -63,7 +63,7 @@ export function LoginForm({ connected, health, error, onError, onToken }: Props)
               type="password"
               value={secret}
               onChange={(event) => setSecret(event.target.value)}
-              className="bg-[var(--inset)]"
+              className="border-border bg-[var(--inset)]"
             />
           </label>
           {error ? (

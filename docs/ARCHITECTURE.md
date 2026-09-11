@@ -15,6 +15,9 @@ UI (static assets)
     → ProbeCell (disposable containment runs)
 ```
 
+Workbench UI stack, layout contract, and prod vs preview chat transport:
+[UI.md](./UI.md).
+
 ## Multiple chats
 
 Each chat is its own **AgentCell** (`idFromName(ownerId:chatId)`). The

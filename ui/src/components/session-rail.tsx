@@ -32,7 +32,7 @@ export function SessionRail({
   onLeave,
 }: Props) {
   return (
-    <aside className="flex w-[4.5rem] shrink-0 flex-col border-r border-border bg-[var(--raised)] lg:w-56">
+    <aside className="flex h-full min-h-0 w-[4.5rem] shrink-0 flex-col overflow-hidden border-r border-border bg-[var(--raised)] lg:w-56">
       <div className="flex items-center gap-2 border-b border-border px-3 py-3">
         <Button
           type="button"

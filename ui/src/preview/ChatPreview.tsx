@@ -35,7 +35,7 @@ export function ChatPreview() {
   const isBusy = status === "submitted" || status === "streaming";
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-3xl flex-col bg-[var(--bench)]">
+    <div className="mx-auto flex h-dvh max-h-dvh max-w-3xl flex-col overflow-hidden bg-[var(--bench)]">
       <div className="flex items-center gap-3 border-b border-border px-5 py-3">
         <span className="machine text-muted-foreground">preview — offline, no model</span>
         <Button
@@ -52,7 +52,7 @@ export function ChatPreview() {
       </div>
 
       <MessageScrollerProvider>
-        <MessageScroller className="flex-1">
+        <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport className="px-5 py-5">
             <MessageScrollerContent className="gap-6">
               {messages.map((message) => (
@@ -118,7 +118,7 @@ export function ChatPreview() {
       </MessageScrollerProvider>
 
       <form
-        className="border-t border-border bg-[var(--raised)]/40 px-5 py-4"
+        className="shrink-0 border-t border-border bg-[var(--raised)]/40 px-5 py-4"
         onSubmit={(event) => {
           event.preventDefault();
           if (!input.trim() || isBusy) return;
@@ -127,12 +127,13 @@ export function ChatPreview() {
           void sendMessage(next);
         }}
       >
-        <InputGroup className="rounded-[var(--radius-card)] border-border bg-[var(--inset)]">
+        <InputGroup className="rounded-[var(--radius-card)] border border-border bg-[var(--inset)]">
           <InputGroupTextarea
             rows={2}
             value={input}
             aria-label="Preview message"
             placeholder="Free input (uses fallback transport)…"
+            className="max-h-40 overflow-y-auto"
             onChange={(event) => setInput(event.target.value)}
           />
           <InputGroupAddon align="block-end">

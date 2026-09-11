@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPane } from "@/components/chat-pane";
 import { LoginForm } from "@/components/login-form";
 import { PromptForm } from "@/components/prompt-form";
@@ -6,6 +6,7 @@ import { RunStrip } from "@/components/run-strip";
 import { SessionHeader } from "@/components/session-header";
 import { SessionRail } from "@/components/session-rail";
 import { StatePanels } from "@/components/state-panels";
+import { Button } from "@/components/ui/button";
 import { CHAT_STORAGE_KEY, readInitialChatId, useWorkbench } from "@/hooks/useWorkbench";
 import { api } from "@/lib/api";
 import type { ChatSummary, EventRow, Panel } from "@/lib/types";
@@ -29,13 +30,16 @@ export function App() {
 function Workbench() {
   const [token, setToken] = useState(localStorage.getItem("celld_token") ?? "");
   const [ownerId, setOwnerId] = useState("operator");
-  const [agentId, setAgentId] = useState(readInitialChatId);
+  // Empty until /api/chats confirms an id — avoids snapshot 404 racing DirectoryCell seed.
+  const [agentId, setAgentId] = useState("");
   const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [text, setText] = useState(
-    "Remember that this project's priority is reliability. Create three maintenance tasks.",
-  );
+  const [text, setText] = useState("");
   const [panel, setPanel] = useState<Panel>("memory");
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : true,
+  );
+
+  const preferredChatId = useMemo(() => readInitialChatId(), []);
 
   const {
     snapshot,
@@ -68,6 +72,9 @@ function Workbench() {
     clearWorkspace,
     decideApproval,
   } = useWorkbench(agentId, token);
+
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
 
   const selectChat = useCallback(
     (id: string) => {
@@ -111,47 +118,63 @@ function Workbench() {
           return;
         }
         setAgentId((current) => {
-          if (list.some((chat) => chat.id === current)) return current;
-          const next = list[0]?.id;
-          if (!next) return current;
-          localStorage.setItem(CHAT_STORAGE_KEY, next);
+          if (current && list.some((chat) => chat.id === current)) return current;
+          const preferred =
+            preferredChatId && list.some((chat) => chat.id === preferredChatId)
+              ? preferredChatId
+              : list[0]?.id;
+          if (!preferred) return current;
+          localStorage.setItem(CHAT_STORAGE_KEY, preferred);
           const url = new URL(window.location.href);
-          url.searchParams.set("c", next);
+          url.searchParams.set("c", preferred);
           window.history.replaceState({}, "", url);
-          resetChatState();
-          return next;
+          if (preferred !== current) resetChatState();
+          return preferred;
         });
       })
       .catch((err: Error) => setError(err.message));
-  }, [token, refreshChats, setError, resetChatState, selectChat, setBusy]);
+  }, [token, refreshChats, preferredChatId, setError, resetChatState, selectChat, setBusy]);
 
   useEffect(() => {
-    if (!token) return undefined;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const data = await api<{ events: EventRow[]; latestEventId: number }>(
-          `${base}/events?after=${cursor}&wait=1`,
-          { token },
-        );
-        if (cancelled) return;
-        if (data.events.length) {
-          setEvents((current) => [...current, ...data.events].slice(-80));
-          setCursor(data.latestEventId);
-          await refresh();
-          await refreshChats().catch(() => undefined);
+    if (!token || !agentId || !base) return undefined;
+    const cancelled = { current: false };
+
+    const loop = async () => {
+      while (!cancelled.current) {
+        try {
+          const data = await api<{ events: EventRow[]; latestEventId: number }>(
+            `${base}/events?after=${cursorRef.current}&wait=1`,
+            { token },
+          );
+          if (cancelled.current) return;
+          if (data.events.length) {
+            setEvents((current) => {
+              const seen = new Set(current.map((row) => row.id));
+              const next = [...current];
+              for (const row of data.events) {
+                if (seen.has(row.id)) continue;
+                seen.add(row.id);
+                next.push(row);
+              }
+              return next.slice(-80);
+            });
+            setCursor(data.latestEventId);
+            await refresh();
+            await refreshChats().catch(() => undefined);
+          }
+          setConnected(true);
+        } catch {
+          if (!cancelled.current) setConnected(false);
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
         }
-        setConnected(true);
-      } catch {
-        setConnected(false);
       }
     };
-    const id = window.setInterval(() => void tick(), 1500);
+
+    void loop();
     return () => {
-      cancelled = true;
-      window.clearInterval(id);
+      cancelled.current = true;
     };
-  }, [token, base, cursor, refresh, refreshChats, setConnected, setCursor, setEvents]);
+  }, [token, agentId, base, refresh, refreshChats, setConnected, setCursor, setEvents]);
 
   useEffect(() => {
     if (!token) return undefined;
@@ -203,7 +226,7 @@ function Workbench() {
   }
 
   return (
-    <div className="flex min-h-screen bg-[var(--bench)]">
+    <div className="flex h-dvh max-h-dvh overflow-hidden bg-[var(--bench)]">
       <SessionRail
         chats={chats}
         activeId={agentId}
@@ -219,7 +242,7 @@ function Workbench() {
         }}
       />
 
-      <main className="relative flex min-w-0 flex-1 flex-col">
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <SessionHeader
           title={sessionTitle}
           ownerId={sessionOwner || ownerId}
@@ -235,7 +258,7 @@ function Workbench() {
           connected={connected}
           onStop={() => void stop()}
         />
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <ChatPane
             messages={snapshot?.messages ?? []}
             approvals={snapshot?.approvals ?? []}
@@ -255,7 +278,10 @@ function Workbench() {
           onSend={() => {
             const next = text;
             setText("");
-            void send(next).then(() => refreshChats().catch(() => undefined));
+            void send(next).then((ok) => {
+              if (!ok) setText(next);
+              else void refreshChats().catch(() => undefined);
+            });
           }}
         />
       </main>
@@ -270,7 +296,7 @@ function Workbench() {
       ) : null}
       <aside
         className={cn(
-          "flex shrink-0 flex-col border-l border-border bg-[var(--raised)] transition-[width,transform]",
+          "flex min-h-0 shrink-0 flex-col border-l border-border bg-[var(--raised)] transition-[width,transform]",
           "fixed inset-y-0 right-0 z-50 w-[min(100vw,22rem)] lg:static lg:z-auto",
           inspectorOpen
             ? "translate-x-0 lg:w-[22rem]"
@@ -278,7 +304,24 @@ function Workbench() {
         )}
         aria-hidden={!inspectorOpen}
       >
-        <div className={cn("flex min-h-0 flex-1 flex-col p-4", !inspectorOpen && "lg:hidden")}>
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col overflow-hidden p-4",
+            !inspectorOpen && "lg:hidden",
+          )}
+        >
+          <div className="mb-3 flex items-center justify-between gap-2 lg:hidden">
+            <span className="text-sm font-medium">Inspector</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setInspectorOpen(false)}
+              aria-label="Close inspector"
+            >
+              Close
+            </Button>
+          </div>
           <StatePanels
             snapshot={snapshot}
             events={events}

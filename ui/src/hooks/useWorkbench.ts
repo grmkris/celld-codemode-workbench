@@ -4,11 +4,12 @@ import type { ChatSummary, EventRow, HealthInfo, SessionInfo, Snapshot } from "@
 
 export const CHAT_STORAGE_KEY = "celld_chat_id";
 
+/** Preferred chat id from URL or localStorage. Empty until the directory confirms it. */
 export function readInitialChatId(): string {
-  if (typeof window === "undefined") return "default";
+  if (typeof window === "undefined") return "";
   const fromQuery = new URLSearchParams(window.location.search).get("c");
   if (fromQuery && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(fromQuery)) return fromQuery;
-  return localStorage.getItem(CHAT_STORAGE_KEY) ?? "default";
+  return localStorage.getItem(CHAT_STORAGE_KEY) ?? "";
 }
 
 export function useWorkbench(agentId: string, token: string) {
@@ -21,7 +22,7 @@ export function useWorkbench(agentId: string, token: string) {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const base = `/api/agents/${agentId}`;
+  const base = agentId ? `/api/agents/${agentId}` : "";
   const runStatus = String(snapshot?.run?.status ?? "idle");
   const live = Boolean(session?.live ?? health?.live);
   const provider = session?.provider ?? health?.provider ?? "fixture";
@@ -40,12 +41,13 @@ export function useWorkbench(agentId: string, token: string) {
   }, [token]);
 
   const refresh = useCallback(async () => {
+    if (!agentId || !base) return;
     const data = await api<Snapshot>(`${base}/snapshot`, { token });
     setSnapshot(data);
     setCursor(data.latestEventId);
     setConnected(true);
     setError(null);
-  }, [base, token]);
+  }, [agentId, base, token]);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,11 +72,40 @@ export function useWorkbench(agentId: string, token: string) {
 
   useEffect(() => {
     if (!token) return;
+    let cancelled = false;
     void api<SessionInfo>("/api/session", { token })
-      .then(setSession)
-      .catch((err: Error) => setError(err.message));
-    void refresh().catch((err: Error) => setError(err.message));
-  }, [token, refresh]);
+      .then((data) => {
+        if (!cancelled) setSession(data);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setError(err.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  // Snapshot only after a real chat id is selected. Cancel so a late 404 cannot stick.
+  useEffect(() => {
+    if (!token || !agentId || !base) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await api<Snapshot>(`${base}/snapshot`, { token });
+        if (cancelled) return;
+        setSnapshot(data);
+        setCursor(data.latestEventId);
+        setConnected(true);
+        setError(null);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, agentId, base]);
 
   const activeByName = useMemo(() => {
     const map = new Map<string, string>();
@@ -105,27 +136,35 @@ export function useWorkbench(agentId: string, token: string) {
 
   const send = useCallback(
     async (text: string) => {
+      if (!agentId || !base) {
+        setError("No chat selected");
+        return false;
+      }
       setError(null);
       setBusy(true);
       try {
         await api(`${base}/chat`, { method: "POST", token, body: JSON.stringify({ text }) });
         await refresh();
         await refreshChats().catch(() => undefined);
+        return true;
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : String(err));
+        return false;
       } finally {
         setBusy(false);
       }
     },
-    [base, token, refresh, refreshChats],
+    [agentId, base, token, refresh, refreshChats],
   );
 
   const stop = useCallback(async () => {
+    if (!agentId || !base) return;
     await api(`${base}/stop`, { method: "POST", token });
     await refresh();
-  }, [base, token, refresh]);
+  }, [agentId, base, token, refresh]);
 
   const clearWorkspace = useCallback(async () => {
+    if (!agentId || !base) return;
     if (
       !window.confirm(
         "Delete all memory and tasks, deactivate snippets, and cancel schedules? Chat history stays.",
@@ -144,10 +183,11 @@ export function useWorkbench(agentId: string, token: string) {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [base, token, refresh]);
+  }, [agentId, base, token, refresh]);
 
   const decideApproval = useCallback(
     async (id: string, decision: "approve" | "deny") => {
+      if (!agentId || !base) return;
       await api(`${base}/approvals`, {
         method: "POST",
         token,
@@ -155,7 +195,7 @@ export function useWorkbench(agentId: string, token: string) {
       });
       await refresh();
     },
-    [base, token, refresh],
+    [agentId, base, token, refresh],
   );
 
   return {
