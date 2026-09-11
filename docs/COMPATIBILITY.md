@@ -2,39 +2,39 @@
 
 Recorded against this checkout on 2026-09-12 (start of `feat/team-agent-platform`).
 
-| Component                           | Version                                                              |
-| ----------------------------------- | -------------------------------------------------------------------- |
-| celld                               | 0.4.1 (`celld --version`)                                            |
-| Node                                | 24.9.0 (dev tooling only)                                            |
-| @tanstack/ai                        | 0.54.0                                                               |
-| @tanstack/ai-code-mode              | 0.4.9                                                                |
-| @tanstack/ai-isolate-quickjs        | 0.3.1                                                                |
-| @tanstack/ai-openai                 | 0.22.6                                                               |
-| @tanstack/ai-grok                   | 0.18.5                                                               |
-| @tanstack/ai-sandbox                | 0.5.7                                                                |
-| @tanstack/ai-sandbox-docker         | 0.3.2                                                                |
-| @tanstack/ai-sandbox-local-process  | 0.2.5                                                                |
-| @tanstack/ai-claude-code            | 0.6.5                                                                |
-| @tanstack/ai-codex                  | 0.5.5                                                                |
-| @tanstack/ai-grok-build             | 0.5.5                                                                |
-| @tanstack/ai-opencode               | 0.4.5                                                                |
-| @tanstack/db                        | 0.9.0                                                                |
-| @tanstack/react-db                  | 0.3.8                                                                |
-| @durable-streams/client             | 0.2.7                                                                |
-| @durable-streams/server             | 0.3.9                                                                |
-| @durable-streams/state              | 0.3.2                                                                |
-| @durable-streams/tanstack-ai-transport | 0.0.10                                                            |
-| better-auth                         | 1.7.4                                                                |
-| kysely                              | 0.28.8                                                               |
-| dockerode                           | 4.0.2                                                                |
-| quickjs-emscripten                  | 0.31.0                                                               |
-| @jitl/quickjs-wasmfile-release-sync | 0.31.0                                                               |
-| zod                                 | 4.6.2 (TanStack Code Mode needs `~standard.jsonSchema`; 4.1.5 threw) |
-| effect                              | 4.0.0-rc.115                                                         |
-| oxlint                              | 1.82.0                                                               |
-| oxfmt                               | 0.67.0                                                               |
-| typescript                          | 5.9.2                                                                |
-| shadcn chatbot-template             | `f79416827acd90244683903a34343f58193432ac` (MIT)                     |
+| Component                              | Version                                                              |
+| -------------------------------------- | -------------------------------------------------------------------- |
+| celld                                  | 0.4.1 (`celld --version`)                                            |
+| Node                                   | 24.9.0 (dev tooling only)                                            |
+| @tanstack/ai                           | 0.54.0                                                               |
+| @tanstack/ai-code-mode                 | 0.4.9                                                                |
+| @tanstack/ai-isolate-quickjs           | 0.3.1                                                                |
+| @tanstack/ai-openai                    | 0.22.6                                                               |
+| @tanstack/ai-grok                      | 0.18.5                                                               |
+| @tanstack/ai-sandbox                   | 0.5.7                                                                |
+| @tanstack/ai-sandbox-docker            | 0.3.2                                                                |
+| @tanstack/ai-sandbox-local-process     | 0.2.5                                                                |
+| @tanstack/ai-claude-code               | 0.6.5                                                                |
+| @tanstack/ai-codex                     | 0.5.5                                                                |
+| @tanstack/ai-grok-build                | 0.5.5                                                                |
+| @tanstack/ai-opencode                  | 0.4.5                                                                |
+| @tanstack/db                           | 0.9.0                                                                |
+| @tanstack/react-db                     | 0.3.8                                                                |
+| @durable-streams/client                | 0.2.7                                                                |
+| @durable-streams/server                | 0.3.9                                                                |
+| @durable-streams/state                 | 0.3.2                                                                |
+| @durable-streams/tanstack-ai-transport | 0.0.10                                                               |
+| better-auth                            | 1.7.4                                                                |
+| kysely                                 | 0.28.8                                                               |
+| dockerode                              | 4.0.2                                                                |
+| quickjs-emscripten                     | 0.31.0                                                               |
+| @jitl/quickjs-wasmfile-release-sync    | 0.31.0                                                               |
+| zod                                    | 4.6.2 (TanStack Code Mode needs `~standard.jsonSchema`; 4.1.5 threw) |
+| effect                                 | 4.0.0-rc.115                                                         |
+| oxlint                                 | 1.82.0                                                               |
+| oxfmt                                  | 0.67.0                                                               |
+| typescript                             | 5.9.2                                                                |
+| shadcn chatbot-template                | `f79416827acd90244683903a34343f58193432ac` (MIT)                     |
 
 ## Baseline verification (Stage A)
 

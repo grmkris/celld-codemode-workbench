@@ -1,0 +1,20 @@
+# Celld durable streams — persistent self-host (production-ish local)
+#
+# Auth is application-side: Celld's worker proxy validates sessions and forwards
+# read requests upstream with STREAMS_WRITE_TOKEN. Do not expose write tokens to
+# browsers or unauthenticated clients.
+
+:4437 {
+	route /v1/stream/* {
+		durable_streams {
+			data_dir ./data
+			max_file_handles 200
+			long_poll_timeout 60s
+		}
+	}
+
+	# Optional Celld API reverse proxy (uncomment when running celld beside Caddy):
+	# route /api/* {
+	# 	reverse_proxy 127.0.0.1:9876
+	# }
+}

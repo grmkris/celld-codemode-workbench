@@ -136,6 +136,25 @@ CREATE TABLE IF NOT EXISTS notifications (
   message TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  published_offset TEXT,
+  acked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS publisher (
+  key TEXT PRIMARY KEY,
+  producer_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL,
+  last_acked_offset TEXT
+);
 `;
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;

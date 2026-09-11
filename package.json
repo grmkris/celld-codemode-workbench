@@ -30,7 +30,9 @@
     "smoke:live": "node scripts/run-celld-tests.mjs --live-smoke",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm test",
     "doctor": "node scripts/doctor.mjs",
-    "measure:bundle": "node scripts/measure-bundle.mjs"
+    "measure:bundle": "node scripts/measure-bundle.mjs",
+    "streams": "node services/streams.mjs",
+    "stack": "node scripts/stack.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
