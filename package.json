@@ -32,7 +32,11 @@
     "doctor": "node scripts/doctor.mjs",
     "measure:bundle": "node scripts/measure-bundle.mjs",
     "streams": "node services/streams.mjs",
-    "stack": "node scripts/stack.mjs"
+    "stack": "node scripts/stack.mjs",
+    "supervisor:build": "node scripts/build-node-tools.mjs",
+    "supervisor": "node dist/supervisor/index.mjs",
+    "runner:build": "node scripts/build-node-tools.mjs",
+    "smoke:supervisor": "node scripts/run-supervisor-smoke.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

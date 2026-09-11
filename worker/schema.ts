@@ -38,6 +38,31 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS run_queue (
   id TEXT PRIMARY KEY,
   user_text TEXT NOT NULL,
+  author TEXT NOT NULL DEFAULT '',
+  message_id TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS commands (
+  principal TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  outcome_json TEXT,
+  message_id TEXT,
+  run_id TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(principal, command_id)
+);
+
+CREATE TABLE IF NOT EXISTS message_parts (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  step INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  payload TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
 
@@ -157,4 +182,4 @@ CREATE TABLE IF NOT EXISTS publisher (
 );
 `;
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;

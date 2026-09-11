@@ -23,12 +23,30 @@ export class Sql {
       "schema_version",
     );
     const currentVersion = current ? Number(current.value) : 0;
+    if (currentVersion < 3 && version >= 3) {
+      this.migrateAgentV3();
+    }
     if (currentVersion < version) {
       this.exec(
         "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         "schema_version",
         String(version),
       );
+    }
+  }
+
+  private migrateAgentV3(): void {
+    const table = this.one<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_queue'",
+    );
+    if (!table) return;
+    const columns = this.exec("PRAGMA table_info(run_queue)");
+    const names = new Set(columns.map((row) => String(row.name)));
+    if (!names.has("author")) {
+      this.exec("ALTER TABLE run_queue ADD COLUMN author TEXT NOT NULL DEFAULT ''");
+    }
+    if (!names.has("message_id")) {
+      this.exec("ALTER TABLE run_queue ADD COLUMN message_id TEXT");
     }
   }
 

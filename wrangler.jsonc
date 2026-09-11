@@ -9,6 +9,7 @@
       { "name": "DIRECTORY", "class_name": "DirectoryCell" },
       { "name": "IDENTITY", "class_name": "IdentityCell" },
       { "name": "TEAM", "class_name": "TeamCell" },
+      { "name": "TASK", "class_name": "TaskCell" },
       { "name": "PROBE", "class_name": "ProbeCell" },
     ],
   },
@@ -28,6 +29,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["IdentityCell"],
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["TaskCell"],
     },
   ],
   "assets": {

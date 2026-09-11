@@ -7,8 +7,15 @@ function trimTrailingSlashes(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+export type StreamsEnv =
+  | Record<string, string | undefined>
+  | {
+      STREAMS_BASE_URL?: string;
+      STREAMS_WRITE_TOKEN?: string;
+    };
+
 export function readStreamsConfig(
-  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+  env: StreamsEnv = process.env as Record<string, string | undefined>,
 ): StreamsConfig {
   return {
     baseUrl: trimTrailingSlashes(env.STREAMS_BASE_URL ?? "http://127.0.0.1:4437"),

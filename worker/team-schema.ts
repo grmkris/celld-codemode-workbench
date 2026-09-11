@@ -128,6 +128,35 @@ CREATE TABLE IF NOT EXISTS tasks_index (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_index_team ON tasks_index(team_id);
+
+CREATE TABLE IF NOT EXISTS enrollment_tokens (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_enrollment_tokens_team ON enrollment_tokens(team_id);
+
+CREATE TABLE IF NOT EXISTS task_assignments (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  machine_id TEXT,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'assigned', 'running', 'completed', 'cancelled')),
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_assignments_machine ON task_assignments(machine_id, status);
+CREATE INDEX IF NOT EXISTS idx_task_assignments_team ON task_assignments(team_id);
 `;
 
-export const TEAM_SCHEMA_VERSION = 1;
+export const TEAM_SCHEMA_VERSION = 2;

@@ -3,6 +3,7 @@ export interface Env {
   DIRECTORY: DurableObjectNamespace;
   IDENTITY: DurableObjectNamespace;
   TEAM: DurableObjectNamespace;
+  TASK: DurableObjectNamespace;
   PROBE: DurableObjectNamespace;
   ASSETS?: Fetcher;
   AUTH_SECRET: string;
@@ -17,4 +18,6 @@ export interface Env {
   ALIBABA_TOKEN_PLAN_API_KEY?: string;
   ALIBABA_MODEL?: string;
   ALLOW_TEST_HOOKS?: string;
+  STREAMS_BASE_URL?: string;
+  STREAMS_WRITE_TOKEN?: string;
 }

@@ -8,12 +8,31 @@ import { HostError } from "../shared/errors";
 import {
   ConversationId,
   InvitationId,
+  MachineId,
   MembershipId,
+  TaskId,
   TeamId,
   conversationCellName,
   validAgentId,
   validOwnerId,
 } from "../shared/ids";
+import {
+  enrollmentTokenIsUsable,
+  generateEnrollmentToken,
+  generateMachineCredential,
+  hashEnrollmentToken,
+  hashMachineCredential,
+  normalizeEnrollmentTtlSeconds,
+  type EnrollmentTokenRow,
+} from "./team/enrollment";
+import {
+  assertMachineCredential,
+  countActiveAssignments,
+  machineCanAcceptWork,
+  parseCapacities,
+  parseLabels,
+  type MachineRow,
+} from "./team/machines";
 import { LIMITS } from "../shared/limits";
 import {
   assertActivityRevision,
@@ -31,6 +50,7 @@ import {
 } from "./team/invitations";
 import {
   canManageInvitations,
+  canManageMachines,
   canWriteConversations,
   parseTeamRole,
   requireRole,
@@ -96,6 +116,30 @@ export class TeamCell {
         return this.activity(await request.json());
       }
 
+      if (request.method === "POST" && url.pathname === "/machines/enroll") {
+        return await this.enrollMachine(await request.json());
+      }
+
+      const machineMatch = url.pathname.match(/^\/machines\/([^/]+)(\/.*)?$/);
+      if (machineMatch) {
+        const machineId = MachineId.parse(decodeURIComponent(machineMatch[1]));
+        const rest = machineMatch[2] ?? "";
+
+        if (request.method === "POST" && rest === "/poll") {
+          return await this.pollMachine(machineId, await request.json(), request);
+        }
+        if (request.method === "POST" && rest === "/heartbeat") {
+          return await this.heartbeatMachine(machineId, request);
+        }
+        if (request.method === "POST" && rest === "/drain") {
+          return await this.drainMachine(machineId, request, userId);
+        }
+        if (request.method === "POST" && rest === "/revoke") {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          return this.revokeMachine(userId, machineId);
+        }
+      }
+
       if (request.method === "POST" && url.pathname === "/invitations/accept") {
         if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
         return await this.acceptInvitation(userId, await request.json(), request);
@@ -159,6 +203,16 @@ export class TeamCell {
         if (request.method === "POST" && rest === "/conversations/link-legacy") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
           return this.linkLegacyConversation(userId, teamId, await request.json());
+        }
+
+        if (request.method === "POST" && rest === "/machines/enrollment-tokens") {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          return await this.createEnrollmentToken(userId, teamId, await request.json());
+        }
+
+        if (request.method === "GET" && rest === "/machines") {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          return this.listMachines(userId, teamId);
         }
 
         const conversationMatch = rest.match(/^\/conversations\/([^/]+)$/);
@@ -702,6 +756,314 @@ export class TeamCell {
       teamId,
     );
   }
+
+  private async createEnrollmentToken(
+    userId: string,
+    teamId: TeamId,
+    body: { ttlSeconds?: number },
+  ): Promise<Response> {
+    const role = this.requireMembership(userId, teamId, "admin");
+    if (!canManageMachines(role)) {
+      throw new HostError("forbidden", "Requires admin role to issue enrollment tokens", 403);
+    }
+
+    const ttlSeconds = normalizeEnrollmentTtlSeconds(body.ttlSeconds);
+    const token = generateEnrollmentToken();
+    const tokenHash = await hashEnrollmentToken(token);
+    const now = Date.now();
+    const id = MembershipId.generate();
+
+    this.sql.exec(
+      `INSERT INTO enrollment_tokens(id, team_id, token_hash, expires_at, revoked_at, created_by, created_at)
+       VALUES(?, ?, ?, ?, NULL, ?, ?)`,
+      id,
+      teamId,
+      tokenHash,
+      now + ttlSeconds * 1000,
+      userId,
+      now,
+    );
+
+    return json(
+      {
+        enrollmentTokenId: id,
+        token,
+        expiresAt: now + ttlSeconds * 1000,
+      },
+      201,
+    );
+  }
+
+  private async enrollMachine(body: {
+    token?: string;
+    name?: string;
+    labels?: Record<string, string>;
+    capacities?: Record<string, unknown>;
+  }): Promise<Response> {
+    const token = String(body.token ?? "").trim();
+    if (!token) throw new HostError("invalid", "Missing enrollment token", 400);
+
+    const tokenHash = await hashEnrollmentToken(token);
+    const enrollment = this.sql.one<EnrollmentTokenRow>(
+      "SELECT * FROM enrollment_tokens WHERE token_hash = ?",
+      tokenHash,
+    );
+    if (!enrollment || !enrollmentTokenIsUsable(enrollment)) {
+      throw new HostError("not_found", "Enrollment token invalid or expired", 404);
+    }
+
+    const teamId = TeamId.parse(enrollment.team_id);
+    const name =
+      String(body.name ?? "supervisor")
+        .trim()
+        .slice(0, 120) || "supervisor";
+    const labels = JSON.stringify(body.labels ?? {});
+    const capacities = JSON.stringify(
+      parseCapacities(JSON.stringify(body.capacities ?? { workspaces: 1 })),
+    );
+    const credential = generateMachineCredential();
+    const credentialHash = await hashMachineCredential(credential);
+    const machineId = MachineId.generate();
+    const now = Date.now();
+
+    this.sql.transaction(() => {
+      this.sql.exec(
+        `INSERT INTO machines(
+           id, team_id, name, status, labels_json, capacities_json, credential_hash,
+           last_seen_at, created_at
+         ) VALUES(?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
+        machineId,
+        teamId,
+        name,
+        labels,
+        capacities,
+        credentialHash,
+        now,
+        now,
+      );
+      this.sql.exec("UPDATE enrollment_tokens SET revoked_at = ? WHERE id = ?", now, enrollment.id);
+    });
+
+    return json(
+      {
+        machineId,
+        teamId,
+        credential,
+        status: "approved",
+      },
+      201,
+    );
+  }
+
+  private async pollMachine(
+    machineId: MachineId,
+    body: { lease?: string; timeoutMs?: number },
+    request: Request,
+  ): Promise<Response> {
+    const machine = await this.requireMachineAuth(machineId, request);
+    if (!machineCanAcceptWork(machine.status)) {
+      return json({ assignments: [], cancels: [], machineStatus: machine.status });
+    }
+
+    const capacities = parseCapacities(machine.capacities_json);
+    const activeRows = this.sql.exec(
+      `SELECT status FROM task_assignments
+       WHERE machine_id = ? AND status IN ('assigned', 'running')`,
+      machineId,
+    ) as Array<{ status: string }>;
+    const { available } = countActiveAssignments(activeRows, capacities);
+    if (available <= 0) {
+      return json({ assignments: [], cancels: [], capacityFull: true });
+    }
+
+    const now = Date.now();
+    const pending = this.sql.one<{
+      id: string;
+      team_id: string;
+      task_id: string;
+      attempt_id: string;
+      conversation_id: string;
+      payload_json: string;
+    }>(
+      `SELECT id, team_id, task_id, attempt_id, conversation_id, payload_json
+       FROM task_assignments
+       WHERE team_id = ? AND status = 'pending' AND machine_id IS NULL
+       ORDER BY created_at ASC LIMIT 1`,
+      machine.team_id,
+    );
+
+    const assignments = [];
+    if (pending) {
+      const updated = this.sql.transaction(() => {
+        this.sql.exec(
+          `UPDATE task_assignments
+           SET machine_id = ?, status = 'assigned', updated_at = ?
+           WHERE id = ? AND status = 'pending' AND machine_id IS NULL`,
+          machineId,
+          now,
+          pending.id,
+        );
+        return this.sql.one<{ machine_id: string | null }>(
+          "SELECT machine_id FROM task_assignments WHERE id = ?",
+          pending.id,
+        );
+      });
+      if (updated?.machine_id === machineId) {
+        assignments.push({
+          assignmentId: pending.id,
+          teamId: pending.team_id,
+          taskId: pending.task_id,
+          attemptId: pending.attempt_id,
+          conversationId: pending.conversation_id,
+          payload: safeJsonParse(pending.payload_json),
+        });
+      }
+    }
+
+    const cancels = this.sql.exec(
+      `SELECT id, task_id, attempt_id, conversation_id
+       FROM task_assignments
+       WHERE machine_id = ? AND cancel_requested = 1 AND status IN ('assigned', 'running')`,
+      machineId,
+    ) as Array<{ id: string; task_id: string; attempt_id: string; conversation_id: string }>;
+
+    this.sql.exec("UPDATE machines SET last_seen_at = ? WHERE id = ?", now, machineId);
+
+    void body.lease;
+    void body.timeoutMs;
+    return json({
+      assignments,
+      cancels: cancels.map((row) => ({
+        assignmentId: row.id,
+        taskId: row.task_id,
+        attemptId: row.attempt_id,
+        conversationId: row.conversation_id,
+      })),
+    });
+  }
+
+  private async heartbeatMachine(machineId: MachineId, request: Request): Promise<Response> {
+    const machine = await this.requireMachineAuth(machineId, request);
+    const now = Date.now();
+    this.sql.exec("UPDATE machines SET last_seen_at = ? WHERE id = ?", now, machineId);
+    return json({ ok: true, machineId, status: machine.status, lastSeenAt: now });
+  }
+
+  private async drainMachine(
+    machineId: MachineId,
+    request: Request,
+    userId: string,
+  ): Promise<Response> {
+    const machine = this.machine(machineId);
+    if (!machine) throw new HostError("not_found", "Machine not found", 404);
+
+    const credential = parseMachineCredential(request);
+    if (credential) {
+      await this.requireMachineAuth(machineId, request);
+    } else if (requireUserId(userId)) {
+      const role = this.requireMembership(userId, TeamId.parse(machine.team_id), "admin");
+      if (!canManageMachines(role)) {
+        throw new HostError("forbidden", "Requires admin role to drain machines", 403);
+      }
+    } else {
+      throw new HostError("forbidden", "Machine credential or admin required", 403);
+    }
+
+    const now = Date.now();
+    this.sql.exec("UPDATE machines SET status = 'draining' WHERE id = ?", machineId);
+    return json({ machineId, status: "draining", updatedAt: now });
+  }
+
+  private revokeMachine(userId: string, machineId: MachineId): Response {
+    const machine = this.machine(machineId);
+    if (!machine) throw new HostError("not_found", "Machine not found", 404);
+    const role = this.requireMembership(userId, TeamId.parse(machine.team_id), "admin");
+    if (!canManageMachines(role)) {
+      throw new HostError("forbidden", "Requires admin role to revoke machines", 403);
+    }
+    const now = Date.now();
+    this.sql.exec(
+      "UPDATE machines SET status = 'revoked', credential_hash = NULL WHERE id = ?",
+      machineId,
+    );
+    return json({ machineId, status: "revoked", revokedAt: now });
+  }
+
+  private listMachines(userId: string, teamId: TeamId): Response {
+    this.requireMembership(userId, teamId, "viewer");
+    const rows = this.sql.exec(
+      "SELECT * FROM machines WHERE team_id = ? ORDER BY created_at DESC",
+      teamId,
+    ) as MachineRow[];
+    return json({ machines: rows.map(publicMachine) });
+  }
+
+  /** Queue a task assignment for supervisor pickup. */
+  queueTaskAssignment(input: {
+    teamId: TeamId;
+    taskId: TaskId;
+    attemptId: string;
+    conversationId: ConversationId;
+    payload?: Record<string, unknown>;
+  }): void {
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO task_assignments(
+         id, team_id, task_id, attempt_id, conversation_id, machine_id, status,
+         payload_json, cancel_requested, created_at, updated_at
+       ) VALUES(?, ?, ?, ?, ?, NULL, 'pending', ?, 0, ?, ?)`,
+      MembershipId.generate(),
+      input.teamId,
+      input.taskId,
+      input.attemptId,
+      input.conversationId,
+      JSON.stringify(input.payload ?? {}),
+      now,
+      now,
+    );
+  }
+
+  private machine(id: MachineId): MachineRow | null {
+    return this.sql.one<MachineRow>("SELECT * FROM machines WHERE id = ?", id);
+  }
+
+  private async requireMachineAuth(machineId: MachineId, request: Request): Promise<MachineRow> {
+    const machine = this.machine(machineId);
+    if (!machine) throw new HostError("not_found", "Machine not found", 404);
+    const credential = parseMachineCredential(request);
+    if (!credential) throw new HostError("forbidden", "Missing machine credential", 403);
+    const credentialHash = await hashMachineCredential(credential);
+    assertMachineCredential(machine, credential, credentialHash);
+    return machine;
+  }
+}
+
+function parseMachineCredential(request: Request): string | null {
+  const auth = request.headers.get("authorization") ?? "";
+  if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
+  const header = request.headers.get("x-celld-machine-credential");
+  return header?.trim() || null;
+}
+
+function safeJsonParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function publicMachine(row: MachineRow) {
+  return {
+    id: String(row.id),
+    teamId: String(row.team_id),
+    name: String(row.name),
+    status: row.status,
+    labels: parseLabels(row.labels_json),
+    capacities: parseCapacities(row.capacities_json),
+    lastSeenAt: row.last_seen_at ? Number(row.last_seen_at) : null,
+    createdAt: Number(row.created_at),
+  };
 }
 
 function requireUserId(value: string): value is string {

@@ -106,6 +106,11 @@ export function conversationCellName(teamId: string, conversationId: string): st
   return `team:${teamId}:conv:${conversationId}`;
 }
 
+/** TaskCell workspace key — one mutating attempt per workspace. */
+export function taskCellName(teamId: string, conversationId: string): string {
+  return `team:${teamId}:conv:${conversationId}:tasks`;
+}
+
 export function scopedOperationId(
   ownerId: string,
   executionId: string,

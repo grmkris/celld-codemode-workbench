@@ -16,5 +16,5 @@
       "@/*": ["./ui/src/*"]
     }
   },
-  "include": ["worker", "ui", "tests/unit", "shared"]
+  "include": ["worker", "ui", "tests/unit", "shared", "supervisor/src", "runner/src"]
 }

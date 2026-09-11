@@ -15,6 +15,7 @@ import {
 import { createFixtureAdapter, createLiveAdapter } from "./model";
 import type { Store } from "./store";
 import type { Env } from "./env";
+import type { OutboxPublisher } from "./streams/publisher";
 
 export interface RuntimeOptions {
   store: Store;
@@ -31,6 +32,7 @@ export interface RuntimeOptions {
   modelUsed?: (used: boolean) => void;
   sharedBudget?: { hostCalls: number };
   scratch?: TestScratch;
+  outbox?: OutboxPublisher;
 }
 
 function record(store: Store, runId: string | null, type: string, payload: unknown): void {
@@ -241,6 +243,40 @@ export async function runConversation(options: RuntimeOptions, userText: string)
   }
 
   record(options.store, options.runId, "run.started", { userText, adapter: adapter.name });
+  let assistantMessageId: string | null = null;
+  let assistant = "";
+  let partSeq = 0;
+  const step = 0;
+  const chunkBatch: unknown[] = [];
+  const CHUNK_BATCH_SIZE = 4;
+
+  const ensureAssistantMessage = (): string => {
+    if (!assistantMessageId) {
+      assistantMessageId = options.store.addMessage("assistant", "");
+    }
+    return assistantMessageId;
+  };
+
+  const flushChunkBatch = async (): Promise<void> => {
+    if (chunkBatch.length === 0) return;
+    const messageId = ensureAssistantMessage();
+    for (const chunk of chunkBatch) {
+      record(options.store, options.runId, String((chunk as { type: string }).type), chunk);
+      if (options.outbox) {
+        await options.outbox.enqueue("chunk", chunk);
+      }
+      options.store.addMessagePart({
+        messageId,
+        kind: String((chunk as { type: string }).type),
+        step,
+        seq: partSeq,
+        payload: chunk,
+      });
+      partSeq += 1;
+    }
+    chunkBatch.length = 0;
+  };
+
   try {
     const stream = chat({
       adapter,
@@ -255,26 +291,39 @@ export async function runConversation(options: RuntimeOptions, userText: string)
       threadId: options.agentId,
       runId: options.runId ?? undefined,
     });
-    let assistant = "";
     for await (const chunk of stream) {
       if (options.isCancelRequested() || options.expectedGeneration() !== options.generation) {
         throw new CancelledError();
       }
-      record(options.store, options.runId, String(chunk.type), chunk);
+      chunkBatch.push(chunk);
+      if (chunkBatch.length >= CHUNK_BATCH_SIZE) {
+        await flushChunkBatch();
+      }
       if (chunk.type === "TEXT_MESSAGE_CONTENT" && "delta" in chunk) {
         assistant += String(chunk.delta ?? "");
+        options.store.updateMessageContent(ensureAssistantMessage(), assistant);
       }
     }
-    if (assistant) options.store.addMessage("assistant", assistant);
+    await flushChunkBatch();
+    if (assistant && assistantMessageId) {
+      options.store.updateMessageContent(assistantMessageId, assistant);
+    }
     options.store.updateRun(options.runId!, {
       status: "completed",
       finished_at: Date.now(),
     });
-    record(options.store, options.runId, "run.completed", { assistant });
+    record(options.store, options.runId, "run.completed", {
+      assistant,
+      messageId: assistantMessageId,
+    });
   } catch (error) {
+    await flushChunkBatch().catch(() => undefined);
     if (error instanceof ApprovalRequiredError) {
       options.store.updateRun(options.runId!, { status: "waiting_approval" });
-      options.store.addMessage("assistant", `Approval required: ${error.operationId}`);
+      options.store.updateMessageContent(
+        assistantMessageId ?? options.store.addMessage("assistant", ""),
+        `Approval required: ${error.operationId}`,
+      );
       return;
     }
     if (error instanceof CancelledError || error instanceof FenceError) {

@@ -9,6 +9,7 @@ export { AgentCell } from "./agent-cell";
 export { DirectoryCell } from "./directory-cell";
 export { IdentityCell } from "./identity-cell";
 export { TeamCell } from "./team-cell";
+export { TaskCell } from "./task-cell";
 export { ProbeCell } from "./probe";
 
 configureQuickJSWasm(wasmModule);
@@ -60,6 +61,10 @@ function forwardWithUser(
 
 function teamStub(env: Env) {
   return env.TEAM.get(env.TEAM.idFromName("global"));
+}
+
+function taskStub(env: Env, workspaceKey: string) {
+  return env.TASK.get(env.TASK.idFromName(workspaceKey));
 }
 
 function forwardTeamPath(
@@ -122,6 +127,19 @@ export default {
       }
 
       assertOrigin(request, env);
+
+      if (request.method === "POST" && url.pathname === "/api/machines/enroll") {
+        return teamStub(env).fetch(
+          new Request(new URL("/machines/enroll" + url.search, request.url), request),
+        );
+      }
+
+      const machineApi = url.pathname.match(/^\/api\/machines\/([^/]+)(\/.*)?$/);
+      if (machineApi) {
+        const rest = `/machines/${machineApi[1]}${machineApi[2] ?? ""}`;
+        return teamStub(env).fetch(new Request(new URL(rest + url.search, request.url), request));
+      }
+
       const user = await requireUser(request, env);
 
       if (url.pathname === "/api/session") {
@@ -167,6 +185,28 @@ export default {
       ) {
         const rest = url.pathname.slice("/api".length);
         return teamStub(env).fetch(forwardTeamPath(request, user, rest));
+      }
+
+      const taskApi = url.pathname.match(
+        /^\/api\/teams\/([^/]+)\/conversations\/([^/]+)\/tasks(\/.*)?$/,
+      );
+      if (taskApi) {
+        const teamId = decodeURIComponent(taskApi[1]);
+        const conversationId = decodeURIComponent(taskApi[2]);
+        const rest = taskApi[3] ?? "";
+        const workspaceKey = `team:${teamId}:conv:${conversationId}:tasks`;
+        const attemptRest = rest.match(/^\/attempts\/([^/]+)(\/.*)?$/);
+        const artifactRest = rest.match(/^\/artifacts\/([^/]+)(\/.*)?$/);
+        const pathname = attemptRest
+          ? `/attempts/${attemptRest[1]}${attemptRest[2] ?? ""}`
+          : artifactRest
+            ? `/artifacts/${artifactRest[1]}${artifactRest[2] ?? ""}`
+            : `/tasks${rest}`;
+        const forwarded = new Request(
+          new URL(pathname + url.search, request.url),
+          forwardWithUser(request, user),
+        );
+        return taskStub(env, workspaceKey).fetch(forwarded);
       }
 
       const match = url.pathname.match(/^\/api\/agents\/([^/]+)(\/.*)?$/);
