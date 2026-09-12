@@ -4,6 +4,17 @@ import { LIMITS, ALL_CAPABILITIES, type CapabilityName } from "../shared/limits"
 import { bytesOf, sha256Hex } from "../shared/crypto";
 import { CancelledError, FenceError, HostError } from "../shared/errors";
 import type { Store } from "./store";
+import type { Env } from "./env";
+import {
+  cancelDelegation,
+  inspectDelegation,
+  listArtifacts,
+  listEligibleResources,
+  readArtifact,
+  readDelegationContext,
+  submitDelegation,
+  type DelegationContext,
+} from "./delegation/client";
 import { proposeNotification } from "./host/notify";
 import { runHost } from "./host/run";
 
@@ -28,6 +39,7 @@ export interface HostContext {
   executionId: string;
   allowed: Set<string>;
   mode: "live" | "test" | "schedule";
+  env?: Env;
   scratch?: TestScratch;
   abortSignal: AbortSignal;
   expectedGeneration: () => number;
@@ -40,6 +52,25 @@ export interface HostContext {
     version?: number,
     mode?: "live" | "test" | "schedule",
   ) => Promise<unknown>;
+}
+
+function requireDelegationContext(store: Store, ctx: HostContext): DelegationContext {
+  if (!ctx.env) {
+    throw new HostError(
+      "not_configured",
+      "Delegation is unavailable in this execution context",
+      503,
+    );
+  }
+  const delegation = readDelegationContext(store, ctx.ownerId, ctx.agentId);
+  if (!delegation) {
+    throw new HostError(
+      "not_configured",
+      "Conversation is not linked to a team workspace for delegation",
+      409,
+    );
+  }
+  return delegation;
 }
 
 function requireCap(ctx: HostContext, name: CapabilityName): void {
@@ -589,6 +620,108 @@ export function createCapabilityTools(store: Store, ctx: HostContext) {
     return runHost(proposeNotification({ channel, message }), store, ctx);
   });
 
+  const resourcesListEligible = toolDefinition({
+    name: "resources_list_eligible",
+    description: "List agent profiles and machines eligible for delegated tasks",
+    inputSchema: z.object({}).optional(),
+  }).server(async () => {
+    requireCap(ctx, "resources");
+    const delegation = requireDelegationContext(store, ctx);
+    const result = await listEligibleResources(ctx.env!, delegation);
+    const fanOut = result.profiles.length + result.machines.length;
+    if (fanOut > LIMITS.delegationFanOutMax) {
+      throw new HostError("limit", "Eligible resource fan-out exceeded");
+    }
+    ctx.record("resources.listEligible", {
+      profiles: result.profiles.length,
+      machines: result.machines.length,
+    });
+    return result;
+  });
+
+  const delegationSubmit = toolDefinition({
+    name: "delegation_submit",
+    description:
+      "Create a delegated task and queue it for a registered worker. Returns task id immediately without waiting for remote completion.",
+    inputSchema: z.object({
+      title: z.string(),
+      harness: z.string().optional(),
+      profileId: z.string().optional(),
+      prompt: z.string().optional(),
+    }),
+  }).server(async (input) => {
+    requireCap(ctx, "delegation");
+    if (ctx.mode === "test") {
+      return {
+        taskId: "test-delegation-task",
+        attemptId: "test-delegation-attempt",
+        assignmentQueued: false,
+        note: "Delegation is not executed in snippet tests",
+      };
+    }
+    const delegation = requireDelegationContext(store, ctx);
+    const title = boundString(input.title, LIMITS.taskTitleBytes, "title");
+    const result = await submitDelegation({
+      env: ctx.env!,
+      ctx: delegation,
+      title,
+      harness: input.harness,
+      profileId: input.profileId,
+      prompt: input.prompt,
+    });
+    ctx.record("delegation.submit", { taskId: result.taskId, harness: input.harness ?? "fixture" });
+    return result;
+  });
+
+  const delegationInspect = toolDefinition({
+    name: "delegation_inspect",
+    description: "Inspect a delegated task and its attempts",
+    inputSchema: z.object({ taskId: z.string() }),
+  }).server(async ({ taskId }) => {
+    requireCap(ctx, "delegation");
+    const delegation = requireDelegationContext(store, ctx);
+    return inspectDelegation(ctx.env!, delegation, taskId);
+  });
+
+  const delegationCancel = toolDefinition({
+    name: "delegation_cancel",
+    description: "Request cancellation of a delegated task",
+    inputSchema: z.object({ taskId: z.string() }),
+  }).server(async ({ taskId }) => {
+    requireCap(ctx, "delegation");
+    const delegation = requireDelegationContext(store, ctx);
+    const result = await cancelDelegation(ctx.env!, delegation, taskId);
+    ctx.record("delegation.cancel", { taskId });
+    return result;
+  });
+
+  const artifactsList = toolDefinition({
+    name: "artifacts_list",
+    description: "List artifacts for a delegated task or attempt",
+    inputSchema: z.object({
+      taskId: z.string().optional(),
+      attemptId: z.string().optional(),
+    }),
+  }).server(async (input) => {
+    requireCap(ctx, "artifacts");
+    const delegation = requireDelegationContext(store, ctx);
+    const result = await listArtifacts(ctx.env!, delegation, input.taskId, input.attemptId);
+    if (result.items.length > LIMITS.delegationFanOutMax) {
+      throw new HostError("limit", "Artifact list fan-out exceeded");
+    }
+    return result;
+  });
+
+  const artifactsRead = toolDefinition({
+    name: "artifacts_read",
+    description: "Read bounded artifact bytes (base64) for review",
+    inputSchema: z.object({ artifactId: z.string() }),
+  }).server(async ({ artifactId }) => {
+    requireCap(ctx, "artifacts");
+    const delegation = requireDelegationContext(store, ctx);
+    return readArtifact(ctx.env!, delegation, artifactId, LIMITS.artifactReadBytes);
+  });
+
   return [
     inspect,
     memoryGet,
@@ -614,6 +747,12 @@ export function createCapabilityTools(store: Store, ctx: HostContext) {
     configGet,
     configUpdate,
     integrationsNotify,
+    resourcesListEligible,
+    delegationSubmit,
+    delegationInspect,
+    delegationCancel,
+    artifactsList,
+    artifactsRead,
   ];
 }
 

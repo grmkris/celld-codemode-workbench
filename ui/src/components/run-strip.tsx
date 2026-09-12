@@ -1,4 +1,5 @@
 import { SquareIcon } from "lucide-react";
+import type { ConnectionStatus } from "@tanstack/ai-client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -8,9 +9,50 @@ const RUN_COLOR: Record<string, string> = {
   running: "text-[var(--run-running)]",
   failed: "text-[var(--run-failed)]",
   completed: "text-[var(--run-completed)]",
+  reconnecting: "text-[var(--run-queued)]",
+  synchronizing: "text-[var(--run-queued)]",
+  sending: "text-[var(--run-running)]",
+  "awaiting approval": "text-[var(--run-failed)]",
+  cancelling: "text-[var(--run-queued)]",
+  finished: "text-[var(--run-completed)]",
 };
 
+export type PlatformStatus =
+  | "reconnecting"
+  | "synchronizing"
+  | "sending"
+  | "queued"
+  | "running"
+  | "awaiting approval"
+  | "cancelling"
+  | "finished"
+  | "idle"
+  | "failed";
+
+export function derivePlatformStatus(input: {
+  runStatus: string;
+  connectionStatus: ConnectionStatus;
+  chatStatus: string;
+  syncing?: boolean;
+  pendingApprovals?: number;
+}): PlatformStatus {
+  if ((input.pendingApprovals ?? 0) > 0) return "awaiting approval";
+  const connection = String(input.connectionStatus);
+  if (connection === "reconnecting" || connection === "connecting") {
+    return "reconnecting";
+  }
+  if (input.syncing) return "synchronizing";
+  if (input.chatStatus === "submitted") return "sending";
+  if (input.runStatus === "cancelling") return "cancelling";
+  if (input.runStatus === "queued") return "queued";
+  if (input.runStatus === "running" || input.chatStatus === "streaming") return "running";
+  if (input.runStatus === "failed") return "failed";
+  if (input.runStatus === "completed") return "finished";
+  return "idle";
+}
+
 interface Props {
+  platformStatus: PlatformStatus;
   runStatus: string;
   live: boolean;
   provider: string;
@@ -19,10 +61,19 @@ interface Props {
   onStop: () => void;
 }
 
-export function RunStrip({ runStatus, live, provider, model, connected, onStop }: Props) {
-  const status = runStatus || "idle";
+export function RunStrip({
+  platformStatus,
+  runStatus,
+  live,
+  provider,
+  model,
+  connected,
+  onStop,
+}: Props) {
+  const status = platformStatus || runStatus || "idle";
   const color = RUN_COLOR[status] ?? RUN_COLOR.idle;
-  const busy = status === "running" || status === "queued";
+  const busy =
+    status === "running" || status === "queued" || status === "sending" || status === "cancelling";
 
   return (
     <div
@@ -31,8 +82,8 @@ export function RunStrip({ runStatus, live, provider, model, connected, onStop }
       aria-live="polite"
     >
       <div className={cn("flex items-center gap-2 text-sm", color)}>
-        <span className="run-dot" data-state={status} aria-hidden="true" />
-        <span className="capitalize">{status}</span>
+        <span className="run-dot" data-state={runStatus || status} aria-hidden="true" />
+        <span className="capitalize">{status.replace(/-/g, " ")}</span>
       </div>
 
       <span className="machine text-muted-foreground">

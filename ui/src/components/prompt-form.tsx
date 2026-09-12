@@ -18,20 +18,26 @@ interface Props {
 export function PromptForm({ value, busy, live, provider, onChange, onSend }: Props) {
   return (
     <form
-      className="border-t border-border bg-[var(--raised)]/40 px-5 py-4"
+      className="shrink-0 border-t border-border bg-[var(--raised)]/40 px-5 py-4"
       onSubmit={(event) => {
         event.preventDefault();
         if (!busy && value.trim()) onSend();
       }}
     >
-      <InputGroup className="rounded-[var(--radius-card)] border-border bg-[var(--inset)]">
+      <InputGroup className="rounded-[var(--radius-card)] border border-border bg-[var(--inset)]">
         <InputGroupTextarea
           rows={3}
           value={value}
           aria-label="Message"
           placeholder="Ask the agent…"
+          className="max-h-40 overflow-y-auto"
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+              return;
+            }
             if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
               event.currentTarget.form?.requestSubmit();
             }
@@ -39,7 +45,7 @@ export function PromptForm({ value, busy, live, provider, onChange, onSend }: Pr
         />
         <InputGroupAddon align="block-end" className="justify-between">
           <span className="machine text-muted-foreground">
-            {live ? `live ${provider}` : "fixture"} — ⌘/Ctrl+Enter
+            {live ? `live ${provider}` : "fixture"} — Enter to send
           </span>
           <InputGroupButton
             type="submit"

@@ -105,6 +105,8 @@ function spawnCelld() {
     ...process.env,
     PATH: `${join(root, "node_modules/.bin")}:${process.env.HOME}/.local/bin:${process.env.PATH}`,
     CELLD_VAR_AUTH_SECRET: "dev-change-me",
+    CELLD_VAR_AUTH_FIXTURE: "1",
+    CELLD_VAR_BETTER_AUTH_SECRET: "dev-change-me",
     CELLD_VAR_MODEL_PROVIDER: liveSmoke
       ? process.env.MODEL_PROVIDER ||
         (process.env.ALIBABA_TOKEN_PLAN_API_KEY ? "alibaba" : "openai")

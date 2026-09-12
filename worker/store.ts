@@ -79,17 +79,53 @@ export class Store {
     return Number(row?.seq ?? 0) + 1;
   }
 
-  addMessage(role: string, content: unknown): string {
-    const id = newId("msg");
+  addMessage(role: string, content: unknown, id?: string): string {
+    const messageId = id ?? newId("msg");
     this.sql.exec(
       "INSERT INTO messages(id, role, content, created_at, seq) VALUES(?, ?, ?, ?, ?)",
-      id,
+      messageId,
       role,
       JSON.stringify(content),
       Date.now(),
       this.nextMessageSeq(),
     );
+    return messageId;
+  }
+
+  updateMessageContent(id: string, content: unknown): void {
+    this.sql.exec("UPDATE messages SET content = ? WHERE id = ?", JSON.stringify(content), id);
+  }
+
+  addMessagePart(input: {
+    messageId: string;
+    kind: string;
+    step: number;
+    seq: number;
+    payload: unknown;
+  }): string {
+    const id = newId("part");
+    this.sql.exec(
+      `INSERT INTO message_parts(id, message_id, kind, step, seq, payload, created_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      input.messageId,
+      input.kind,
+      input.step,
+      input.seq,
+      JSON.stringify(input.payload),
+      Date.now(),
+    );
     return id;
+  }
+
+  messageParts(messageId?: string) {
+    if (messageId) {
+      return this.sql.exec(
+        "SELECT * FROM message_parts WHERE message_id = ? ORDER BY step ASC, seq ASC",
+        messageId,
+      );
+    }
+    return this.sql.exec("SELECT * FROM message_parts ORDER BY created_at ASC");
   }
 
   messages() {
@@ -124,15 +160,28 @@ export class Store {
     return this.sql.one<Record<string, unknown>>("SELECT * FROM runs WHERE id = ?", id);
   }
 
-  enqueue(userText: string): string {
+  enqueue(userText: string, author = "", messageId: string | null = null): string {
     const id = newId("q");
     this.sql.exec(
-      "INSERT INTO run_queue(id, user_text, created_at) VALUES(?, ?, ?)",
+      "INSERT INTO run_queue(id, user_text, author, message_id, created_at) VALUES(?, ?, ?, ?, ?)",
       id,
       userText,
+      author,
+      messageId,
       Date.now(),
     );
     return id;
+  }
+
+  queuedItems() {
+    return this.sql.exec("SELECT * FROM run_queue ORDER BY created_at ASC");
+  }
+
+  removeQueued(id: string): boolean {
+    const existing = this.sql.one("SELECT id FROM run_queue WHERE id = ?", id);
+    if (!existing) return false;
+    this.deleteQueued(id);
+    return true;
   }
 
   nextQueued() {
@@ -608,5 +657,149 @@ export class Store {
 
   notifications() {
     return this.sql.exec("SELECT * FROM notifications ORDER BY created_at DESC LIMIT 50");
+  }
+
+  getCommand(principal: string, commandId: string) {
+    return this.sql.one<{
+      principal: string;
+      command_id: string;
+      kind: string;
+      payload_hash: string;
+      payload: string;
+      outcome_json: string | null;
+      message_id: string | null;
+      run_id: string | null;
+      created_at: number;
+    }>("SELECT * FROM commands WHERE principal = ? AND command_id = ?", principal, commandId);
+  }
+
+  insertCommand(row: {
+    principal: string;
+    commandId: string;
+    kind: string;
+    payloadHash: string;
+    payload: string;
+    messageId?: string | null;
+    runId?: string | null;
+  }): void {
+    this.sql.exec(
+      `INSERT INTO commands(principal, command_id, kind, payload_hash, payload, outcome_json, message_id, run_id, created_at)
+       VALUES(?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+      row.principal,
+      row.commandId,
+      row.kind,
+      row.payloadHash,
+      row.payload,
+      row.messageId ?? null,
+      row.runId ?? null,
+      Date.now(),
+    );
+  }
+
+  finishCommand(
+    principal: string,
+    commandId: string,
+    outcome: unknown,
+    patch?: { messageId?: string | null; runId?: string | null },
+  ): void {
+    this.sql.exec(
+      `UPDATE commands
+       SET outcome_json = ?, message_id = COALESCE(?, message_id), run_id = COALESCE(?, run_id)
+       WHERE principal = ? AND command_id = ?`,
+      JSON.stringify(outcome),
+      patch?.messageId ?? null,
+      patch?.runId ?? null,
+      principal,
+      commandId,
+    );
+  }
+
+  publisherOffset(key = "chat"): string | null {
+    const row = this.sql.one<{ last_acked_offset: string | null }>(
+      "SELECT last_acked_offset FROM publisher WHERE key = ?",
+      key,
+    );
+    return row?.last_acked_offset ? String(row.last_acked_offset) : null;
+  }
+
+  metaValue(key: string): string | null {
+    const row = this.sql.one<{ value: string }>("SELECT value FROM meta WHERE key = ?", key);
+    return row ? String(row.value) : null;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.sql.exec(
+      "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      key,
+      value,
+    );
+  }
+
+  isQueuePaused(): boolean {
+    return this.metaValue("queue_paused") === "1";
+  }
+
+  setQueuePaused(paused: boolean): void {
+    this.setMeta("queue_paused", paused ? "1" : "0");
+  }
+
+  renameAgent(name: string): void {
+    this.sql.exec(
+      "UPDATE agent SET name = ?, updated_at = ? WHERE id IS NOT NULL",
+      name,
+      Date.now(),
+    );
+  }
+
+  casOperationStatus(id: string, expected: string, next: string): boolean {
+    const current = this.operation(id);
+    if (!current || String(current.status) !== expected) return false;
+    this.updateOperation(id, next);
+    return true;
+  }
+
+  enqueueInbox(eventId: string, kind: string, payload: unknown): boolean {
+    const existing = this.sql.one<{ event_id: string }>(
+      "SELECT event_id FROM inbox WHERE event_id = ?",
+      eventId,
+    );
+    if (existing) return false;
+    this.sql.exec(
+      "INSERT INTO inbox(event_id, kind, payload, processed_at, created_at) VALUES(?, ?, ?, NULL, ?)",
+      eventId,
+      kind,
+      JSON.stringify(payload),
+      Date.now(),
+    );
+    const count = Number(this.sql.one<{ n: number }>("SELECT COUNT(*) AS n FROM inbox")?.n ?? 0);
+    if (count > LIMITS.inboxRetained) {
+      this.sql.exec(
+        "DELETE FROM inbox WHERE event_id IN (SELECT event_id FROM inbox WHERE processed_at IS NOT NULL ORDER BY created_at ASC LIMIT ?)",
+        count - LIMITS.inboxRetained,
+      );
+    }
+    return true;
+  }
+
+  pendingInbox(limit: number) {
+    return this.sql.exec(
+      "SELECT * FROM inbox WHERE processed_at IS NULL ORDER BY created_at ASC LIMIT ?",
+      limit,
+    ) as Array<{
+      event_id: string;
+      kind: string;
+      payload: string;
+      processed_at: number | null;
+      created_at: number;
+    }>;
+  }
+
+  markInboxProcessed(eventId: string): void {
+    this.sql.exec("UPDATE inbox SET processed_at = ? WHERE event_id = ?", Date.now(), eventId);
+  }
+
+  setDelegationContext(teamId: string, conversationId: string): void {
+    this.setMeta("team_id", teamId);
+    this.setMeta("conversation_id", conversationId);
   }
 }

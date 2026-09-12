@@ -57,6 +57,7 @@ export interface HealthInfo {
   provider?: string;
   model?: string;
   live?: boolean;
+  authFixture?: boolean;
 }
 
 export type Panel = "memory" | "snippets" | "schedules" | "trace";

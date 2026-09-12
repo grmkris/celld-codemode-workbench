@@ -1,11 +1,21 @@
 import { hmacSha256Hex } from "../shared/crypto";
 import { validOwnerId } from "../shared/ids";
 import { HostError } from "../shared/errors";
+import type { Env } from "./env";
 
 export interface Session {
   ownerId: string;
   exp: number;
 }
+
+export interface AuthenticatedUser {
+  userId: string;
+  email: string;
+  name: string;
+  ownerId: string;
+}
+
+const MUTATING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
 function encodePayload(session: Session): string {
   return btoa(JSON.stringify(session))
@@ -65,6 +75,92 @@ export function readBearer(request: Request): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/** @deprecated Prefer requireUser for Better Auth sessions. */
 export async function requireSession(request: Request, secret: string): Promise<Session> {
   return verifySession(secret, readBearer(request));
+}
+
+export function stripInternalHeaders(request: Request): Request {
+  const headers = new Headers(request.headers);
+  const keys = Array.from(headers.keys());
+  for (const key of keys) {
+    if (key.toLowerCase().startsWith("x-celld-")) {
+      headers.delete(key);
+    }
+  }
+  return new Request(request, { headers });
+}
+
+function requestHost(request: Request): string {
+  return new URL(request.url).host;
+}
+
+function headerHost(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
+}
+
+export function assertOrigin(request: Request, _env: Env): void {
+  if (!MUTATING_METHODS.has(request.method)) return;
+  const originHost =
+    headerHost(request.headers.get("origin")) ?? headerHost(request.headers.get("referer"));
+  if (!originHost) {
+    return;
+  }
+  if (originHost !== requestHost(request)) {
+    throw new HostError("forbidden", "Origin mismatch", 403);
+  }
+}
+
+function resolveOwnerId(userId: string): string {
+  if (validOwnerId(userId)) return userId;
+  throw new HostError("invalid_owner", "Invalid owner id", 400);
+}
+
+async function identitySession(request: Request, env: Env): Promise<AuthenticatedUser | null> {
+  try {
+    const id = env.IDENTITY.idFromName("global");
+    const response = await env.IDENTITY.get(id).fetch(
+      new Request(new URL("/session", request.url), { headers: request.headers }),
+    );
+    if (!response.ok) return null;
+    const body = (await response.json()) as { userId?: string; email?: string; name?: string };
+    if (!body.userId || !body.email || !body.name) return null;
+    return {
+      userId: body.userId,
+      email: body.email,
+      name: body.name,
+      ownerId: resolveOwnerId(body.userId),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function requireUser(request: Request, env: Env): Promise<AuthenticatedUser> {
+  if (env.AUTH_FIXTURE === "1") {
+    const bearer = readBearer(request);
+    if (bearer) {
+      try {
+        const legacy = await verifySession(env.AUTH_SECRET, bearer);
+        return {
+          userId: legacy.ownerId,
+          email: `${legacy.ownerId}@example.com`,
+          name: legacy.ownerId,
+          ownerId: legacy.ownerId,
+        };
+      } catch {
+        // Fall through to Better Auth session lookup.
+      }
+    }
+  }
+
+  const session = await identitySession(request, env);
+  if (session) return session;
+
+  throw new HostError("unauthenticated", "Missing session", 401);
 }

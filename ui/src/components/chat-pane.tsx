@@ -43,9 +43,9 @@ export function ChatPane({
 
   if (messages.length === 0) {
     return (
-      <div className="flex flex-1 flex-col overflow-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <GateCards approvals={approvals} onDecide={onDecide} />
-        <div className="flex flex-1 items-center justify-center p-6">
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
           <Empty className="border-0 bg-transparent p-0">
             <EmptyHeader>
               <EmptyTitle className="text-[1.75rem] font-semibold">What should we do?</EmptyTitle>
@@ -60,7 +60,7 @@ export function ChatPane({
           </Empty>
         </div>
         {error ? (
-          <div className="px-5 pb-4">
+          <div className="shrink-0 px-5 pb-4">
             <Alert variant="destructive">
               <TriangleAlertIcon />
               <AlertTitle>Request failed</AlertTitle>
@@ -73,10 +73,10 @@ export function ChatPane({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <GateCards approvals={approvals} onDecide={onDecide} />
       <MessageScrollerProvider>
-        <MessageScroller className="flex-1">
+        <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport className="px-5 py-5">
             <MessageScrollerContent className="gap-6">
               {messages.map((message) => (

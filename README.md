@@ -50,8 +50,10 @@ npm run doctor
 npm run dev
 ```
 
-Open `http://127.0.0.1:9876`. Log in as owner `operator` with the shared
-secret. Disconnecting the browser does not stop a run. Use **Stop**.
+Open `http://127.0.0.1:9876`. With `AUTH_FIXTURE=1` (default in tests), log in
+via **Enter** as fixture owner `operator`. For Better Auth email/password, leave
+fixture mode off and use `/login` / `/signup`. Disconnecting the browser does
+not stop a run. Use **Stop**.
 
 Fixture mode uses a deterministic model that still exercises the real
 interpreter, host capabilities, SQLite, transport, and UI.
@@ -77,6 +79,26 @@ npm run test:live    # fails clearly when no key is configured
 
 `npm run test:celld` reports live-provider as **UNRUN** unless you pass
 `--live-smoke`. Never treat UNRUN as PASS.
+
+## Stack (streams + celld)
+
+```sh
+npm run streams     # Durable Streams sidecar only (:4437)
+npm run stack       # streams + celld dev (:9876), sets STREAMS_BASE_URL
+```
+
+## Supervisor + runner
+
+```sh
+npm run supervisor:build
+npm run supervisor -- enroll --name my-laptop --base-url http://127.0.0.1:9876 --token <token>
+npm run supervisor -- run --name my-laptop
+npm run runner:build   # dist/runner/runner.mjs (fixture default harness)
+```
+
+Harness profiles (`fixture`, `claude-code`, `codex`, `grok-build`, `opencode`) resolve
+via `runner/src/profiles.ts`. All harness live rows are **UNRUN** — see
+[docs/HARNESSES.md](docs/HARNESSES.md).
 
 ## Verify
 
@@ -116,6 +138,11 @@ Expect `probe:sync-infinite-loop` and `probe:microtask-loop` to pass while
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/COMMANDS.md](docs/COMMANDS.md),
+[docs/STREAMS.md](docs/STREAMS.md),
+[docs/SELF-HOST.md](docs/SELF-HOST.md),
+[docs/SECURITY.md](docs/SECURITY.md),
+[docs/HARNESSES.md](docs/HARNESSES.md),
 [docs/RECOVERY.md](docs/RECOVERY.md),
 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md),
 and [docs/DEMO.md](docs/DEMO.md).

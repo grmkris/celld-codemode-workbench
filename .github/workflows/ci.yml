@@ -59,6 +59,7 @@ jobs:
         env:
           CELLD_TEST_PORT: "9888"
           CELLD_ISOLATE_ROOT: ${{ runner.temp }}/celld-test-9888
+          AUTH_FIXTURE: "1"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -86,6 +87,7 @@ jobs:
       - run: npm run test:browser
         env:
           MODEL_PROVIDER: fixture
+          AUTH_FIXTURE: "1"
           CELLD_ISOLATE_ROOT: ${{ runner.temp }}/celld-browser-9889
           CELLD_DEV_CLEAN: "1"
           CELLD_NO_WATCH: "1"
@@ -95,3 +97,48 @@ jobs:
           name: playwright-report
           path: playwright-report
           if-no-files-found: ignore
+
+  streams:
+    name: streams sidecar smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Start streams sidecar
+        run: |
+          node services/streams.mjs &
+          echo $! > streams.pid
+          for i in $(seq 1 30); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 1 http://127.0.0.1:4437/ || echo 000)
+            # DurableStreamTestServer answers 404 on unknown paths; any HTTP response means up.
+            if [ "$code" != "000" ]; then
+              echo "streams healthy (http $code)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "streams sidecar failed to start"
+          exit 1
+        env:
+          STREAMS_PORT: "4437"
+          STREAMS_DATA_DIR: ${{ runner.temp }}/celld-streams-ci
+
+  supervisor:
+    name: supervisor build smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run supervisor:build
+      - run: test -f dist/supervisor/index.mjs
+      - run: test -f dist/runner/runner.mjs

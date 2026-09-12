@@ -38,6 +38,31 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS run_queue (
   id TEXT PRIMARY KEY,
   user_text TEXT NOT NULL,
+  author TEXT NOT NULL DEFAULT '',
+  message_id TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS commands (
+  principal TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  outcome_json TEXT,
+  message_id TEXT,
+  run_id TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(principal, command_id)
+);
+
+CREATE TABLE IF NOT EXISTS message_parts (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  step INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  payload TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
 
@@ -136,6 +161,33 @@ CREATE TABLE IF NOT EXISTS notifications (
   message TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  published_offset TEXT,
+  acked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS publisher (
+  key TEXT PRIMARY KEY,
+  producer_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL,
+  last_acked_offset TEXT
+);
+
+CREATE TABLE IF NOT EXISTS inbox (
+  event_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  processed_at INTEGER,
+  created_at INTEGER NOT NULL
+);
 `;
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 4;
