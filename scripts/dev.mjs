@@ -67,12 +67,20 @@ const child = spawn(
   },
 );
 
-function stop() {
-  if (child.exitCode == null && !child.killed) {
-    child.kill("SIGTERM");
-  }
+function stop(signal = "SIGTERM") {
+  if (child.exitCode != null || child.killed) return;
+  child.kill(signal);
+  // celld can linger on long-poll drains; escalate so Playwright webServer exits.
+  setTimeout(() => {
+    if (child.exitCode == null && !child.killed) {
+      child.kill("SIGKILL");
+    }
+  }, 2_000).unref();
 }
 
-process.on("SIGTERM", stop);
-process.on("SIGINT", stop);
-child.on("exit", (code) => process.exit(code ?? 0));
+process.on("SIGTERM", () => stop("SIGTERM"));
+process.on("SIGINT", () => stop("SIGINT"));
+process.on("SIGHUP", () => stop("SIGTERM"));
+child.on("exit", (code, signal) => {
+  process.exit(code ?? (signal ? 1 : 0));
+});

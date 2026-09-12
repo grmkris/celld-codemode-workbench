@@ -20,16 +20,21 @@ export default defineConfig({
         env: {
           ...process.env,
           CELLD_PORT: "9889",
+          CELLD_VAR_AUTH_FIXTURE: "1",
           MODEL_PROVIDER: "fixture",
           CELLD_ISOLATE_ROOT: browserIsolate,
           CELLD_DEV_CLEAN: "1",
           CELLD_NO_WATCH: "1",
-          CELLD_SHUTDOWN_TOTAL_MS: "12000",
-          CELLD_SHUTDOWN_DRAIN_MS: "4000",
+          CELLD_SHUTDOWN_TOTAL_MS: "3000",
+          CELLD_SHUTDOWN_DRAIN_MS: "1000",
           CELLD_DRAIN_TOKEN_WAIT_MS: "0",
         },
         url: "http://127.0.0.1:9889/health",
         reuseExistingServer: false,
         timeout: 90_000,
+        gracefulShutdown: {
+          signal: "SIGTERM",
+          timeout: 5_000,
+        },
       },
 });

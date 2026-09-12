@@ -43,6 +43,16 @@ Recorded against this checkout on 2026-09-12 (start of `feat/team-agent-platform
 - Containment probes `sync-infinite-loop` and `microtask-loop`: PASS
 - Starting commit before platform work: `d0ceda4` on `feat/team-agent-platform`
 
+## Stage F–G (coordinator + docs/CI)
+
+- Code Mode capabilities: `resources_list_eligible`, `delegation_submit`,
+  `delegation_inspect`, `delegation_cancel`, `artifacts_list`, `artifacts_read`
+- Command kinds: `cancel_task`, `stop_all` (conversation-scoped)
+- Agent schema v4: `inbox` table for deduped coordinator wakes
+- Task schema v2: `source_cell_key`, harness metadata on delegated tasks
+- Runner profiles: `fixture`, `claude-code`, `codex`, `grok-build`, `opencode` (all live UNRUN)
+- CI jobs: `streams` sidecar smoke, `supervisor` build smoke; `AUTH_FIXTURE=1` on celld/browser
+
 ## Identifier library decision
 
 `@just-be/effect-typed-id@0.5.0` resolves with a single `effect@4.0.0-rc.115`

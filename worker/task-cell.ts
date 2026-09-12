@@ -21,6 +21,7 @@ import {
   type CancellationState,
 } from "./task/cancellation";
 import { assertLeaseFence, type AttemptFence } from "./task/lease";
+import { notifyAgentInbox } from "./delegation/client";
 import { TASK_SCHEMA_SQL, TASK_SCHEMA_VERSION } from "./task-schema";
 import { Sql } from "./sql";
 import type { Env } from "./env";
@@ -33,6 +34,10 @@ type TaskRow = {
   status: string;
   cancellation_state: CancellationState;
   workspace_key: string;
+  source_cell_key: string | null;
+  harness: string | null;
+  profile_id: string | null;
+  prompt: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -70,6 +75,9 @@ export class TaskCell {
       if (request.method === "GET" && url.pathname === "/tasks") {
         return this.listTasks();
       }
+      if (request.method === "GET" && url.pathname === "/artifacts") {
+        return this.listArtifacts(url);
+      }
 
       const taskMatch = url.pathname.match(/^\/tasks\/([^/]+)(\/.*)?$/);
       if (taskMatch) {
@@ -82,9 +90,17 @@ export class TaskCell {
         if (request.method === "POST" && rest === "/cancel") {
           return this.cancelTask(taskId);
         }
+        if (request.method === "POST" && rest === "/complete") {
+          return await this.completeTask(taskId, await request.json());
+        }
         if (request.method === "POST" && rest === "/attempts") {
           return await this.createAttempt(taskId, await request.json());
         }
+      }
+
+      const artifactRead = url.pathname.match(/^\/artifacts\/([^/]+)\/read$/);
+      if (request.method === "GET" && artifactRead) {
+        return this.readArtifact(ArtifactId.parse(decodeURIComponent(artifactRead[1])), url);
       }
 
       const attemptEvents = url.pathname.match(/^\/attempts\/([^/]+)\/events$/);
@@ -129,24 +145,40 @@ export class TaskCell {
     }
   }
 
-  private createTask(body: { teamId?: string; conversationId?: string; title?: string }): Response {
+  private createTask(body: {
+    teamId?: string;
+    conversationId?: string;
+    title?: string;
+    sourceCellKey?: string;
+    harness?: string;
+    profileId?: string;
+    prompt?: string;
+  }): Response {
     const teamId = TeamId.parse(body.teamId);
     const conversationId = ConversationId.parse(body.conversationId);
     const title = normalizeTitle(body.title);
     const now = Date.now();
     const taskId = TaskId.generate();
     const workspaceKey = taskCellName(teamId, conversationId);
+    const sourceCellKey = body.sourceCellKey ? String(body.sourceCellKey).slice(0, 240) : null;
+    const harness = body.harness ? String(body.harness).slice(0, 64) : null;
+    const profileId = body.profileId ? String(body.profileId).slice(0, 128) : null;
+    const prompt = body.prompt ? String(body.prompt).slice(0, LIMITS.taskNotesBytes) : null;
 
     this.sql.exec(
       `INSERT INTO tasks(
          id, team_id, conversation_id, title, status, cancellation_state,
-         workspace_key, created_at, updated_at
-       ) VALUES(?, ?, ?, ?, 'pending', 'none', ?, ?, ?)`,
+         workspace_key, source_cell_key, harness, profile_id, prompt, created_at, updated_at
+       ) VALUES(?, ?, ?, ?, 'pending', 'none', ?, ?, ?, ?, ?, ?, ?)`,
       taskId,
       teamId,
       conversationId,
       title,
       workspaceKey,
+      sourceCellKey,
+      harness,
+      profileId,
+      prompt,
       now,
       now,
     );
@@ -192,7 +224,130 @@ export class TaskCell {
       taskId,
     );
 
-    return json({ task: publicTask(this.task(taskId)!), cancellationState: next });
+    const updated = this.task(taskId)!;
+    if (updated.status === "cancelled") {
+      this.ctx.waitUntil(this.notifyInboxIfNeeded(updated, "task.cancelled"));
+    }
+    return json({ task: publicTask(updated), cancellationState: next });
+  }
+
+  private async completeTask(
+    taskId: TaskId,
+    body: { status?: string; result?: unknown },
+  ): Promise<Response> {
+    const row = this.task(taskId);
+    if (!row) throw new HostError("not_found", "Task not found", 404);
+    const status = String(body.status ?? "succeeded");
+    if (!["succeeded", "failed"].includes(status)) {
+      throw new HostError("invalid", "status must be succeeded or failed", 400);
+    }
+    if (row.status === "cancelled" || row.status === "succeeded" || row.status === "failed") {
+      throw new HostError("conflict", "Task is already terminal", 409);
+    }
+
+    const now = Date.now();
+    this.sql.transaction(() => {
+      this.sql.exec(
+        "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+        status,
+        now,
+        taskId,
+      );
+      this.sql.exec(
+        `UPDATE attempts SET status = ?, finished_at = ?
+         WHERE task_id = ? AND status IN ('pending', 'running')`,
+        status === "succeeded" ? "succeeded" : "failed",
+        now,
+        taskId,
+      );
+    });
+
+    const updated = this.task(taskId)!;
+    await this.notifyInboxIfNeeded(
+      updated,
+      status === "succeeded" ? "task.completed" : "task.failed",
+      body.result,
+    );
+    return json({ task: publicTask(updated) });
+  }
+
+  private listArtifacts(url: URL): Response {
+    const taskId = url.searchParams.get("taskId");
+    const attemptId = url.searchParams.get("attemptId");
+    let rows: Array<Record<string, unknown>> = [];
+    if (attemptId) {
+      rows = this.sql.exec(
+        "SELECT * FROM artifacts WHERE attempt_id = ? ORDER BY created_at ASC LIMIT ?",
+        AttemptId.parse(attemptId),
+        LIMITS.delegationFanOutMax,
+      ) as Array<Record<string, unknown>>;
+    } else if (taskId) {
+      rows = this.sql.exec(
+        `SELECT a.* FROM artifacts a
+         JOIN attempts att ON att.id = a.attempt_id
+         WHERE att.task_id = ?
+         ORDER BY a.created_at ASC LIMIT ?`,
+        TaskId.parse(taskId),
+        LIMITS.delegationFanOutMax,
+      ) as Array<Record<string, unknown>>;
+    } else {
+      rows = this.sql.exec(
+        "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ?",
+        LIMITS.delegationFanOutMax,
+      ) as Array<Record<string, unknown>>;
+    }
+    return json({ items: rows.map(publicArtifact) });
+  }
+
+  private readArtifact(artifactId: ArtifactId, url: URL): Response {
+    const artifact = this.sql.one<{
+      id: string;
+      size_bytes: number;
+      status: string;
+    }>("SELECT id, size_bytes, status FROM artifacts WHERE id = ?", artifactId);
+    if (!artifact) throw new HostError("not_found", "Artifact not found", 404);
+
+    const maxBytes = Math.min(
+      Number(url.searchParams.get("maxBytes") ?? LIMITS.artifactReadBytes),
+      LIMITS.artifactReadBytes,
+    );
+    const chunks = this.sql.exec(
+      "SELECT data_b64 FROM artifact_chunks WHERE artifact_id = ? ORDER BY chunk_index ASC",
+      artifactId,
+    ) as Array<{ data_b64: string }>;
+
+    let dataB64 = "";
+    for (const chunk of chunks) {
+      if (bytesOf(dataB64) + bytesOf(chunk.data_b64) > maxBytes) break;
+      dataB64 += String(chunk.data_b64);
+    }
+    const truncated = bytesOf(dataB64) < Number(artifact.size_bytes);
+    return json({
+      artifactId,
+      dataB64,
+      truncated,
+      sizeBytes: Number(artifact.size_bytes),
+      status: artifact.status,
+    });
+  }
+
+  private async notifyInboxIfNeeded(row: TaskRow, kind: string, result?: unknown): Promise<void> {
+    const sourceCellKey = row.source_cell_key ? String(row.source_cell_key) : "";
+    if (!sourceCellKey || !this.env.AGENT) return;
+    const eventId = `${kind}:${row.id}:${row.updated_at}`;
+    await notifyAgentInbox(this.env, sourceCellKey, {
+      eventId,
+      kind,
+      payload: {
+        taskId: row.id,
+        teamId: row.team_id,
+        conversationId: row.conversation_id,
+        title: row.title,
+        status: row.status,
+        harness: row.harness,
+        result: result ?? null,
+      },
+    }).catch(() => undefined);
   }
 
   private async createAttempt(
@@ -545,8 +700,24 @@ function publicTask(row: TaskRow) {
     status: String(row.status),
     cancellationState: String(row.cancellation_state),
     workspaceKey: String(row.workspace_key),
+    sourceCellKey: row.source_cell_key ? String(row.source_cell_key) : null,
+    harness: row.harness ? String(row.harness) : null,
+    profileId: row.profile_id ? String(row.profile_id) : null,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+  };
+}
+
+function publicArtifact(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    attemptId: String(row.attempt_id),
+    name: String(row.name),
+    status: String(row.status),
+    contentHash: row.content_hash ? String(row.content_hash) : null,
+    sizeBytes: Number(row.size_bytes ?? 0),
+    approvedAt: row.approved_at ? Number(row.approved_at) : null,
+    createdAt: Number(row.created_at),
   };
 }
 

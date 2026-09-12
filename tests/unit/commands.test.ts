@@ -3,7 +3,7 @@ import { assertApprovalCas } from "../../worker/commands/approvals";
 import { resolveCommandDedup } from "../../worker/commands/dedup";
 import { shouldAdvanceQueue } from "../../worker/commands/queue";
 import { evaluateStopFence } from "../../worker/commands/stop";
-import type { CommandRow } from "../../worker/commands/types";
+import { COMMAND_KINDS, type CommandKind, type CommandRow } from "../../worker/commands/types";
 import { HostError } from "../../shared/errors";
 
 function commandRow(overrides: Partial<CommandRow> = {}): CommandRow {
@@ -107,6 +107,19 @@ describe("shouldAdvanceQueue", () => {
         hasQueued: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("COMMAND_KINDS", () => {
+  it("includes cancel_task and stop_all for delegation control", () => {
+    expect(COMMAND_KINDS).toContain("cancel_task");
+    expect(COMMAND_KINDS).toContain("stop_all");
+    expect(COMMAND_KINDS).toContain("stop");
+  });
+
+  it("keeps send as the primary mutation kind", () => {
+    const kinds = COMMAND_KINDS as readonly CommandKind[];
+    expect(kinds[0]).toBe("send");
   });
 });
 

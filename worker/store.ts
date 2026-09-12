@@ -757,4 +757,49 @@ export class Store {
     this.updateOperation(id, next);
     return true;
   }
+
+  enqueueInbox(eventId: string, kind: string, payload: unknown): boolean {
+    const existing = this.sql.one<{ event_id: string }>(
+      "SELECT event_id FROM inbox WHERE event_id = ?",
+      eventId,
+    );
+    if (existing) return false;
+    this.sql.exec(
+      "INSERT INTO inbox(event_id, kind, payload, processed_at, created_at) VALUES(?, ?, ?, NULL, ?)",
+      eventId,
+      kind,
+      JSON.stringify(payload),
+      Date.now(),
+    );
+    const count = Number(this.sql.one<{ n: number }>("SELECT COUNT(*) AS n FROM inbox")?.n ?? 0);
+    if (count > LIMITS.inboxRetained) {
+      this.sql.exec(
+        "DELETE FROM inbox WHERE event_id IN (SELECT event_id FROM inbox WHERE processed_at IS NOT NULL ORDER BY created_at ASC LIMIT ?)",
+        count - LIMITS.inboxRetained,
+      );
+    }
+    return true;
+  }
+
+  pendingInbox(limit: number) {
+    return this.sql.exec(
+      "SELECT * FROM inbox WHERE processed_at IS NULL ORDER BY created_at ASC LIMIT ?",
+      limit,
+    ) as Array<{
+      event_id: string;
+      kind: string;
+      payload: string;
+      processed_at: number | null;
+      created_at: number;
+    }>;
+  }
+
+  markInboxProcessed(eventId: string): void {
+    this.sql.exec("UPDATE inbox SET processed_at = ? WHERE event_id = ?", Date.now(), eventId);
+  }
+
+  setDelegationContext(teamId: string, conversationId: string): void {
+    this.setMeta("team_id", teamId);
+    this.setMeta("conversation_id", conversationId);
+  }
 }

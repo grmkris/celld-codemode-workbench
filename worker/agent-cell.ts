@@ -9,6 +9,7 @@ import { executeSnippet, runConversation } from "./runtime";
 import { configureQuickJSWasm } from "./isolate";
 import type { Env } from "./env";
 import { grantedSet, type HostContext } from "./capabilities";
+import { cancelDelegation, readDelegationContext } from "./delegation/client";
 import { executeApprovedNotification } from "./host/notify";
 import { runHost } from "./host/run";
 import { assertApprovalCas } from "./commands/approvals";
@@ -117,6 +118,12 @@ export class AgentCell {
       if (request.method === "POST" && url.pathname === "/capabilities") {
         return this.setCapabilities(await request.json());
       }
+      if (request.method === "POST" && url.pathname === "/delegation/link") {
+        return this.linkDelegation(await request.json());
+      }
+      if (request.method === "POST" && url.pathname === "/inbox") {
+        return this.receiveInbox(await request.json());
+      }
       if (
         this.env.ALLOW_TEST_HOOKS === "1" &&
         request.method === "POST" &&
@@ -137,6 +144,7 @@ export class AgentCell {
   async alarm(): Promise<void> {
     this.recoverOrContinue();
     this.flushOutboxAsync();
+    await this.processInboxCoordinatorTurns();
     const now = Date.now();
     const due = this.store.dueSchedules(now);
     for (const schedule of due) {
@@ -199,14 +207,62 @@ export class AgentCell {
     await this.armAlarm();
   }
 
-  private bootstrap(body: { name?: string }): Response {
+  private bootstrap(body: { name?: string; teamId?: string; conversationId?: string }): Response {
     if (this.isArchived()) {
       return json({ error: "chat archived", code: "gone" }, 410);
     }
     const name = String(body.name ?? this.agentId);
     this.store.ensureAgent(this.ownerId, this.agentId, name);
+    if (body.teamId && body.conversationId) {
+      this.store.setDelegationContext(String(body.teamId), String(body.conversationId));
+    }
     this.pushActivity("idle");
     return json({ ok: true, agentId: this.agentId });
+  }
+
+  private linkDelegation(body: { teamId?: string; conversationId?: string }): Response {
+    const teamId = String(body.teamId ?? "").trim();
+    const conversationId = String(body.conversationId ?? "").trim();
+    if (!teamId || !conversationId) {
+      throw new HostError("invalid", "teamId and conversationId required", 400);
+    }
+    this.store.setDelegationContext(teamId, conversationId);
+    return json({ ok: true, teamId, conversationId });
+  }
+
+  private receiveInbox(body: { eventId?: string; kind?: string; payload?: unknown }): Response {
+    const eventId = String(body.eventId ?? "").trim();
+    const kind = String(body.kind ?? "").trim();
+    if (!eventId || !kind) throw new HostError("invalid", "eventId and kind required", 400);
+    const accepted = this.store.enqueueInbox(eventId, kind, body.payload ?? {});
+    if (accepted) {
+      this.store.addEvent(null, "inbox.enqueued", { eventId, kind });
+      this.ctx.waitUntil(this.armAlarm());
+    }
+    return json({ accepted, eventId, deduped: !accepted });
+  }
+
+  private async processInboxCoordinatorTurns(): Promise<void> {
+    const pending = this.store.pendingInbox(LIMITS.inboxCoordinatorTurns);
+    if (pending.length === 0) return;
+    if (this.store.activeRun()) return;
+
+    for (const row of pending) {
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = JSON.parse(String(row.payload)) as Record<string, unknown>;
+      } catch {
+        payload = {};
+      }
+      const summary = `[system:${row.kind}] task ${String(payload.taskId ?? "unknown")} status=${String(payload.status ?? "unknown")}`;
+      this.store.addMessage("system", summary);
+      this.store.markInboxProcessed(String(row.event_id));
+      this.store.addEvent(null, "inbox.processed", {
+        eventId: row.event_id,
+        kind: row.kind,
+      });
+    }
+    this.pushActivity("idle");
   }
 
   private markArchived(): Response {
@@ -363,6 +419,10 @@ export class AgentCell {
       }
       case "stop":
         return this.stopCommand(envelope, payload);
+      case "cancel_task":
+        return await this.cancelTaskCommand(payload);
+      case "stop_all":
+        return await this.stopAllCommand(envelope, payload);
       case "approve":
         return this.approvalCommand(payload, "approve", principal);
       case "deny":
@@ -444,6 +504,68 @@ export class AgentCell {
         messageId: userMessageId,
       },
       waitUntil: this.process(admitted.id, admitted.generation, text),
+    };
+  }
+
+  private async cancelTaskCommand(payload: Record<string, unknown>): Promise<{
+    body: Record<string, unknown>;
+    status: number;
+  }> {
+    const taskId = String(payload.taskId ?? payload.id ?? "").trim();
+    if (!taskId) throw new HostError("invalid", "taskId required", 400);
+    const delegation = readDelegationContext(
+      this.store,
+      String(this.store.agent()?.owner_id ?? this.ownerId),
+      String(this.store.agent()?.id ?? this.agentId),
+    );
+    if (!delegation) {
+      throw new HostError(
+        "not_configured",
+        "Conversation is not linked for task cancellation",
+        409,
+      );
+    }
+    const result = await cancelDelegation(this.env, delegation, taskId);
+    return { status: 200, body: { ok: true, taskId, result } };
+  }
+
+  private async stopAllCommand(
+    envelope: CommandEnvelope,
+    payload: Record<string, unknown>,
+  ): Promise<{ body: Record<string, unknown>; status: number; runId?: string }> {
+    const stop = this.stopCommand(envelope, payload);
+    const delegation = readDelegationContext(
+      this.store,
+      String(this.store.agent()?.owner_id ?? this.ownerId),
+      String(this.store.agent()?.id ?? this.agentId),
+    );
+    const cancelled: string[] = [];
+    if (delegation) {
+      const listResponse = await this.env.TASK.get(
+        this.env.TASK.idFromName(
+          `team:${delegation.teamId}:conv:${delegation.conversationId}:tasks`,
+        ),
+      ).fetch(new Request("https://task.internal/tasks", { method: "GET" }));
+      if (listResponse.ok) {
+        const body = (await listResponse.json()) as {
+          tasks?: Array<{ id: string; status: string }>;
+        };
+        for (const task of body.tasks ?? []) {
+          if (["pending", "assigned", "running"].includes(String(task.status))) {
+            await cancelDelegation(this.env, delegation, String(task.id)).catch(() => undefined);
+            cancelled.push(String(task.id));
+            if (cancelled.length >= LIMITS.delegationFanOutMax) break;
+          }
+        }
+      }
+    }
+    return {
+      ...stop,
+      body: {
+        ...stop.body,
+        cancelledTasks: cancelled,
+        scope: "conversation",
+      },
     };
   }
 
@@ -730,6 +852,7 @@ export class AgentCell {
       executionId: "approval",
       allowed: grantedSet(String(this.store.agent()?.granted_capabilities)),
       mode: "live",
+      env: this.env,
       abortSignal: this.abort?.signal ?? new AbortController().signal,
       expectedGeneration: () => this.currentGeneration,
       isCancelRequested: () => false,

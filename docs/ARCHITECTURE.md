@@ -1,19 +1,51 @@
 # Architecture
 
-The application is one Cloudflare-compatible Worker plus three Durable Object
-classes. It is intended to run on **celld**, not on a Node process.
+The application is one Cloudflare-compatible Worker plus Durable Object cells.
+It is intended to run on **celld**, not on a Node process.
+
+## Authority model
+
+**Celld SQLite is authoritative.** Durable Streams, browser collections, and
+supervisor journals are derived transports. All mutations flow through
+authenticated Worker routes into the owning cell.
+
+| Layer         | Role                                                                       |
+| ------------- | -------------------------------------------------------------------------- |
+| Worker edge   | Better Auth session, Origin checks, strip `x-celld-*`, route to cells      |
+| IdentityCell  | Users, sessions, accounts                                                  |
+| DirectoryCell | Per-owner chat index (legacy workbench)                                    |
+| TeamCell      | Teams, memberships, invitations, machines, conversation index, assignments |
+| AgentCell     | Per-chat commands, messages/parts, runs, queue, inbox, outbox, app state   |
+| TaskCell      | Delegated tasks, attempts, leases, artifacts, cancellation (per workspace) |
+| ProbeCell     | Disposable containment runs                                                |
+
+Cross-cell effects use durable intents (e.g. task completion → conversation
+`inbox` row) plus reconciliation on alarm/wake.
+
+## Topology
 
 ```
-UI (static assets)
+Browsers (useChat + optional StreamDB)
   → Worker (auth, routing)
-    → DirectoryCell (one per owner — chat index)
-    → AgentCell (one per owner:chat — transcript, runs, app state)
-        → TanStack AI chat loop
-            → execute_typescript
-                → fuel-budget QuickJS WASM isolate
-                    → host capabilities (SQL, approvals, schedules)
-    → ProbeCell (disposable containment runs)
+    → IdentityCell
+    → TeamCell (global registry)
+    → AgentCell (owner:chat — transcript, commands, coordinator inbox)
+    → TaskCell (team:conv:tasks workspace)
+    → Durable Streams sidecar (derived chat/state transport)
+  → Supervisor (registered machine)
+    → Docker runner (fixture | claude-code | codex | grok-build | opencode)
+        → TaskCell tool-exec (scoped host tools)
 ```
+
+Legacy workbench path:
+
+```
+UI → DirectoryCell → AgentCell → TanStack AI → Code Mode isolate → capabilities
+```
+
+Team/delegation path adds TaskCell + supervisor runner; coordinator inbox turns
+process task completion events without re-invoking the model unless a new user
+command is sent.
 
 Workbench UI stack, layout contract, and prod vs preview chat transport:
 [UI.md](./UI.md).

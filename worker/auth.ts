@@ -122,34 +122,45 @@ function resolveOwnerId(userId: string): string {
 }
 
 async function identitySession(request: Request, env: Env): Promise<AuthenticatedUser | null> {
-  const id = env.IDENTITY.idFromName("global");
-  const response = await env.IDENTITY.get(id).fetch(
-    new Request(new URL("/session", request.url), { headers: request.headers }),
-  );
-  if (!response.ok) return null;
-  const body = (await response.json()) as { userId?: string; email?: string; name?: string };
-  if (!body.userId || !body.email || !body.name) return null;
-  return {
-    userId: body.userId,
-    email: body.email,
-    name: body.name,
-    ownerId: resolveOwnerId(body.userId),
-  };
+  try {
+    const id = env.IDENTITY.idFromName("global");
+    const response = await env.IDENTITY.get(id).fetch(
+      new Request(new URL("/session", request.url), { headers: request.headers }),
+    );
+    if (!response.ok) return null;
+    const body = (await response.json()) as { userId?: string; email?: string; name?: string };
+    if (!body.userId || !body.email || !body.name) return null;
+    return {
+      userId: body.userId,
+      email: body.email,
+      name: body.name,
+      ownerId: resolveOwnerId(body.userId),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function requireUser(request: Request, env: Env): Promise<AuthenticatedUser> {
+  if (env.AUTH_FIXTURE === "1") {
+    const bearer = readBearer(request);
+    if (bearer) {
+      try {
+        const legacy = await verifySession(env.AUTH_SECRET, bearer);
+        return {
+          userId: legacy.ownerId,
+          email: `${legacy.ownerId}@example.com`,
+          name: legacy.ownerId,
+          ownerId: legacy.ownerId,
+        };
+      } catch {
+        // Fall through to Better Auth session lookup.
+      }
+    }
+  }
+
   const session = await identitySession(request, env);
   if (session) return session;
-
-  if (env.AUTH_FIXTURE === "1") {
-    const legacy = await verifySession(env.AUTH_SECRET, readBearer(request));
-    return {
-      userId: legacy.ownerId,
-      email: `${legacy.ownerId}@example.com`,
-      name: legacy.ownerId,
-      ownerId: legacy.ownerId,
-    };
-  }
 
   throw new HostError("unauthenticated", "Missing session", 401);
 }

@@ -1,34 +1,26 @@
 #!/usr/bin/env node
 import { loadAssignment } from "./assignment.js";
-import { runClaudeCodeHarness } from "./claude-code-harness.js";
-import { runFixtureHarness } from "./fixture-harness.js";
+import { resolveHarnessProfile } from "./profiles.js";
 
 async function main() {
   const assignment = loadAssignment();
-  const harness = String(
-    assignment.harness ?? assignment.payload?.harness ?? process.env.CELLD_HARNESS ?? "fixture",
-  );
+  const { profile, name } = await resolveHarnessProfile(assignment);
 
   console.log(
     JSON.stringify({
       type: "runner-start",
-      harness,
+      harness: name,
+      package: profile.packageName,
+      sandbox: profile.sandbox,
+      liveStatus: profile.liveStatus,
       attemptId: assignment.attemptId,
       envKind: assignment.envKind,
     }),
   );
 
-  switch (harness) {
-    case "claude-code":
-      await runClaudeCodeHarness(assignment);
-      break;
-    case "fixture":
-    default:
-      await runFixtureHarness(assignment);
-      break;
-  }
+  await profile.run(assignment);
 
-  console.log(JSON.stringify({ type: "runner-end", status: "ok" }));
+  console.log(JSON.stringify({ type: "runner-end", status: "ok", harness: name }));
 }
 
 main().catch((error) => {

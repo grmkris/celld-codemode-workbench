@@ -15,3 +15,8 @@ source in this repository, not an upstream patch file.
 
 `worker/vendor/quickjs-loader.mjs` is the browser Emscripten loader required
 because the default Node loader hangs on celld.
+
+Portions of the workbench UI adapt the MIT-licensed shadcn chatbot template
+(https://github.com/shadcn-ui/chatbot-template, commit
+f79416827acd90244683903a34343f58193432ac), including MessageScroller layout
+patterns and chat chrome under `ui/src/components/`.

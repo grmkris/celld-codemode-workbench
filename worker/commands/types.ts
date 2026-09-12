@@ -1,6 +1,8 @@
 export const COMMAND_KINDS = [
   "send",
   "stop",
+  "cancel_task",
+  "stop_all",
   "approve",
   "deny",
   "resume_queue",

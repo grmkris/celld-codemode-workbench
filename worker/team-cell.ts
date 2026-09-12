@@ -215,6 +215,16 @@ export class TeamCell {
           return this.listMachines(userId, teamId);
         }
 
+        if (request.method === "GET" && rest === "/resources/eligible") {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          return this.listEligibleResources(userId, teamId);
+        }
+
+        if (request.method === "POST" && rest === "/task-assignments") {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          return this.queueTaskAssignmentRoute(userId, teamId, await request.json());
+        }
+
         const conversationMatch = rest.match(/^\/conversations\/([^/]+)$/);
         if (request.method === "PATCH" && conversationMatch) {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
@@ -996,6 +1006,58 @@ export class TeamCell {
       teamId,
     ) as MachineRow[];
     return json({ machines: rows.map(publicMachine) });
+  }
+
+  private listEligibleResources(userId: string, teamId: TeamId): Response {
+    this.requireMembership(userId, teamId, "viewer");
+    const profiles = this.sql.exec(
+      `SELECT id, team_id, name, instructions, model, tools_json, created_at
+       FROM agent_profiles WHERE team_id = ? ORDER BY created_at ASC LIMIT ?`,
+      teamId,
+      LIMITS.delegationFanOutMax,
+    ) as Array<Record<string, unknown>>;
+    const machines = this.sql.exec(
+      `SELECT id, team_id, name, status, labels_json, capacities_json, last_seen_at, created_at
+       FROM machines
+       WHERE team_id = ? AND status IN ('approved', 'draining')
+       ORDER BY created_at DESC LIMIT ?`,
+      teamId,
+      LIMITS.delegationFanOutMax,
+    ) as MachineRow[];
+    return json({
+      profiles: profiles.map((row) => ({
+        id: String(row.id),
+        name: String(row.name),
+        model: row.model ? String(row.model) : null,
+        tools: safeJsonParse(String(row.tools_json ?? "[]")),
+      })),
+      machines: machines.map(publicMachine),
+    });
+  }
+
+  private queueTaskAssignmentRoute(
+    userId: string,
+    teamId: TeamId,
+    body: {
+      taskId?: string;
+      attemptId?: string;
+      conversationId?: string;
+      payload?: Record<string, unknown>;
+    },
+  ): Response {
+    this.requireMembership(userId, teamId, "member");
+    const taskId = TaskId.parse(body.taskId);
+    const attemptId = String(body.attemptId ?? "").trim();
+    if (!attemptId) throw new HostError("invalid", "attemptId required", 400);
+    const conversationId = ConversationId.parse(body.conversationId);
+    this.queueTaskAssignment({
+      teamId,
+      taskId,
+      attemptId,
+      conversationId,
+      payload: body.payload,
+    });
+    return json({ queued: true, taskId, attemptId, conversationId }, 201);
   }
 
   /** Queue a task assignment for supervisor pickup. */

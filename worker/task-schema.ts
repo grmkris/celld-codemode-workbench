@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   cancellation_state TEXT NOT NULL DEFAULT 'none'
     CHECK(cancellation_state IN ('none', 'requested', 'signalled', 'escalated', 'confirmed')),
   workspace_key TEXT NOT NULL,
+  source_cell_key TEXT,
+  harness TEXT,
+  profile_id TEXT,
+  prompt TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -82,4 +86,4 @@ CREATE TABLE IF NOT EXISTS leases (
 CREATE INDEX IF NOT EXISTS idx_leases_attempt ON leases(attempt_id);
 `;
 
-export const TASK_SCHEMA_VERSION = 1;
+export const TASK_SCHEMA_VERSION = 2;

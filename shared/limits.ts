@@ -30,6 +30,10 @@ export const LIMITS = {
   chatsPerOwner: 32,
   chatTitleBytes: 120,
   chatPreviewBytes: 240,
+  delegationFanOutMax: 8,
+  inboxCoordinatorTurns: 3,
+  artifactReadBytes: 32_768,
+  inboxRetained: 256,
 } as const;
 
 export const LOW_RISK_CAPABILITIES = [
@@ -39,9 +43,11 @@ export const LOW_RISK_CAPABILITIES = [
   "snippets",
   "schedules",
   "config",
+  "resources",
+  "artifacts",
 ] as const;
 
-export const PROTECTED_CAPABILITIES = ["integrations"] as const;
+export const PROTECTED_CAPABILITIES = ["integrations", "delegation"] as const;
 
 export const ALL_CAPABILITIES = [...LOW_RISK_CAPABILITIES, ...PROTECTED_CAPABILITIES] as const;
 

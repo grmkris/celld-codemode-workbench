@@ -99,6 +99,8 @@ export function useWorkbench(agentId: string, token: string) {
         setError(null);
       } catch (err: unknown) {
         if (cancelled) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (err instanceof Error && err.name === "AbortError") return;
         setError(err instanceof Error ? err.message : String(err));
       }
     })();

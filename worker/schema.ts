@@ -180,6 +180,14 @@ CREATE TABLE IF NOT EXISTS publisher (
   last_seq INTEGER NOT NULL,
   last_acked_offset TEXT
 );
+
+CREATE TABLE IF NOT EXISTS inbox (
+  event_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  processed_at INTEGER,
+  created_at INTEGER NOT NULL
+);
 `;
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;

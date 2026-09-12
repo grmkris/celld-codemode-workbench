@@ -44,8 +44,8 @@
   "vars": {
     "AUTH_SECRET": "dev-change-me",
     "AUTH_FIXTURE": "0",
-    "BETTER_AUTH_SECRET": "dev-change-me",
-    "BETTER_AUTH_URL": "",
+    "BETTER_AUTH_SECRET": "dev-change-me-celld-better-auth-32b",
+    "BETTER_AUTH_URL": "http://127.0.0.1:9876",
     "MODEL_PROVIDER": "fixture",
     "ALIBABA_TOKEN_PLAN_API_KEY": "",
     "ALIBABA_MODEL": "qwen3.8-max",

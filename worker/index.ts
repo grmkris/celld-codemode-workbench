@@ -92,6 +92,7 @@ export default {
         model: modelFor(env),
         live: isLiveProvider(env),
         hasAlibabaKey: Boolean(env.ALIBABA_TOKEN_PLAN_API_KEY),
+        authFixture: env.AUTH_FIXTURE === "1",
       });
     }
 
