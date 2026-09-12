@@ -22,6 +22,7 @@ interface Props {
   approvalCount: number;
   onTeamSelect: (teamId: string) => void;
   onSelect: (conversationId: string) => void;
+  onRename?: (conversation: ConversationSummary, title: string) => void;
   onCreate: () => void;
   onMachines: () => void;
   onMembers: () => void;
@@ -38,6 +39,7 @@ export function TeamRail({
   approvalCount,
   onTeamSelect,
   onSelect,
+  onRename,
   onCreate,
   onMachines,
   onMembers,
@@ -79,17 +81,25 @@ export function TeamRail({
           {conversations.map((chat) => {
             const active = chat.id === activeConversationId;
             const dot = RUN_DOT[chat.runStatus] ?? RUN_DOT.idle;
+            const label = chat.title || chat.id.slice(0, 8);
             return (
               <button
                 key={chat.id}
                 type="button"
                 onClick={() => onSelect(chat.id)}
+                onDoubleClick={() => {
+                  if (!onRename) return;
+                  const next = window.prompt("Rename conversation", chat.title || "");
+                  if (next == null) return;
+                  onRename(chat, next);
+                }}
                 className={cn(
                   "group relative flex w-full flex-col gap-0.5 rounded-[var(--radius-well)] px-2.5 py-2 text-left transition-colors",
                   "hover:bg-muted/50 focus-visible:outline-none",
                   active && "bg-muted/60",
                 )}
                 aria-current={active ? "page" : undefined}
+                aria-label={label}
               >
                 {active ? (
                   <span
@@ -99,9 +109,7 @@ export function TeamRail({
                 ) : null}
                 <div className="flex items-center gap-2">
                   <span className={cn("size-1.5 shrink-0 rounded-full", dot)} aria-hidden="true" />
-                  <span className="hidden truncate text-sm font-medium lg:inline">
-                    {chat.title || chat.id.slice(0, 8)}
-                  </span>
+                  <span className="hidden truncate text-sm font-medium lg:inline">{label}</span>
                   <span className="machine truncate lg:hidden">{chat.id.slice(0, 4)}</span>
                 </div>
                 {chat.lastMessage ? (

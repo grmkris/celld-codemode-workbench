@@ -59,6 +59,23 @@ If the streams sidecar is down:
   disconnected
 - Snapshot hydrate still paints the transcript
 
+## Team Durable State
+
+TeamCell owns per-team `outbox`/`publisher` rows (`kind` / key `state:<teamId>`)
+and publishes Durable State change events to
+`/v1/stream/state/team:<teamId>`. The Worker proxies reads at
+`GET /api/teams/:id/state/stream` after membership checks.
+
+Mutating TeamCell responses return `txid`. The first flush for a team emits
+`snapshot-start`, every current row (teams, conversations, machines,
+delegatedTasks), then `snapshot-end`. Later mutations emit
+`insert`/`update`/`delete` with `headers.txid`.
+
+UI `useTeamState` builds `createStreamDB({ live: "sse", state: teamStateSchema })`,
+preloads, and uses `useLiveQuery`. Rename is an optimistic StreamDB action that
+PATCHes then `awaitTxId(txid)`. Approvals and checklist tasks stay on the agent
+snapshot.
+
 ## Epoch / resnapshot
 
 When the publisher epoch bumps (cell reconstruction), clients with a stale

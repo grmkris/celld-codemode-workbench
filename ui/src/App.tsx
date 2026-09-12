@@ -277,12 +277,14 @@ function TeamWorkbench({
 
   useEffect(() => {
     if (!token || !teamId || busy) return;
+    if (teamState.syncing) return;
     const known = teamState.conversations.some((row) => row.id === conversationId);
     if (known) return;
     if (teamState.conversations.length > 0) {
       navigate({ name: "team-chat", teamId, conversationId: teamState.conversations[0].id }, true);
       return;
     }
+    if (conversationId && conversationId !== "new") return;
     setBusy(true);
     void api<{ conversation: { id: string } }>(
       `/api/teams/${encodeURIComponent(teamId)}/conversations`,
@@ -292,7 +294,7 @@ function TeamWorkbench({
         navigate({ name: "team-chat", teamId, conversationId: data.conversation.id }, true);
       })
       .finally(() => setBusy(false));
-  }, [busy, conversationId, navigate, teamId, teamState.conversations, token]);
+  }, [busy, conversationId, navigate, teamId, teamState.conversations, teamState.syncing, token]);
 
   const platformStatus = derivePlatformStatus({
     runStatus: String(workbench.snapshot?.run?.status ?? "idle"),
@@ -330,6 +332,9 @@ function TeamWorkbench({
             });
           }}
           onSelect={(id) => navigate({ name: "team-chat", teamId, conversationId: id })}
+          onRename={(conversation, title) => {
+            void teamState.renameConversation(conversation, title).catch(() => undefined);
+          }}
           onCreate={() => {
             setBusy(true);
             void api<{ conversation: { id: string } }>(

@@ -66,6 +66,16 @@ import {
 import { TEAM_SCHEMA_SQL, TEAM_SCHEMA_VERSION } from "./team-schema";
 import { Sql } from "./sql";
 import type { Env } from "./env";
+import { createTeamStatePublisher } from "./team/state-outbox";
+import {
+  stateConversationValue,
+  stateDelegatedTaskValue,
+  stateMachineValue,
+  stateTeamValue,
+} from "./team/state-values";
+import { teamStateSchema } from "../shared/state-schema";
+import { readStreamsConfig, stateStreamUrl } from "./streams/config";
+import { proxyStreamRead } from "./streams/proxy";
 
 type TeamRow = {
   id: string;
@@ -112,8 +122,27 @@ export class TeamCell {
   }
 
   async alarm(): Promise<void> {
-    this.applyMachineSweep(Date.now());
+    const touched = this.applyMachineSweep(Date.now());
+    for (const teamId of touched) {
+      await this.publishTeamState(TeamId.parse(teamId)).catch(() => undefined);
+    }
+    await this.flushPendingStateOutboxes();
     await this.armMachineSweepAlarm();
+  }
+
+  private async flushPendingStateOutboxes(): Promise<void> {
+    const rows = this.sql.exec(
+      `SELECT DISTINCT kind FROM outbox WHERE acked_at IS NULL AND kind LIKE 'state:%'`,
+    ) as Array<{ kind: string }>;
+    for (const row of rows) {
+      const teamId = String(row.kind).slice("state:".length);
+      if (!teamId) continue;
+      try {
+        await createTeamStatePublisher(this.sql, this.env, teamId).flush();
+      } catch {
+        // retry next alarm
+      }
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -122,11 +151,11 @@ export class TeamCell {
 
     try {
       if (request.method === "POST" && url.pathname === "/bootstrap-personal") {
-        return this.bootstrapPersonal(userId, await request.json());
+        return await this.bootstrapPersonal(userId, await request.json());
       }
 
       if (request.method === "POST" && url.pathname === "/activity") {
-        return this.activity(await request.json());
+        return await this.activity(await request.json());
       }
 
       if (request.method === "POST" && url.pathname === "/machines/enroll") {
@@ -167,7 +196,7 @@ export class TeamCell {
         }
         if (request.method === "POST" && rest === "/revoke") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
-          return this.revokeMachine(userId, machineId);
+          return await this.revokeMachine(userId, machineId);
         }
       }
 
@@ -192,7 +221,7 @@ export class TeamCell {
 
       if (request.method === "POST" && url.pathname === "/teams") {
         if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
-        return this.createTeam(userId, await request.json());
+        return await this.createTeam(userId, await request.json());
       }
 
       const teamMatch = url.pathname.match(/^\/teams\/([^/]+)(\/.*)?$/);
@@ -228,12 +257,12 @@ export class TeamCell {
 
         if (request.method === "POST" && rest === "/conversations") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
-          return this.createConversation(userId, teamId, await request.json());
+          return await this.createConversation(userId, teamId, await request.json());
         }
 
         if (request.method === "POST" && rest === "/conversations/link-legacy") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
-          return this.linkLegacyConversation(userId, teamId, await request.json());
+          return await this.linkLegacyConversation(userId, teamId, await request.json());
         }
 
         if (request.method === "POST" && rest === "/machines/enrollment-tokens") {
@@ -246,6 +275,11 @@ export class TeamCell {
           return this.listMachines(userId, teamId);
         }
 
+        if (request.method === "GET" && rest === "/state/stream") {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          return this.stateStream(userId, teamId, request);
+        }
+
         if (request.method === "GET" && rest === "/resources/eligible") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
           return this.listEligibleResources(userId, teamId);
@@ -253,27 +287,56 @@ export class TeamCell {
 
         if (request.method === "POST" && rest === "/task-assignments") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
-          return this.queueTaskAssignmentRoute(userId, teamId, await request.json());
+          return await this.queueTaskAssignmentRoute(userId, teamId, await request.json());
         }
 
         const cancelAssignment = rest.match(/^\/task-assignments\/([^/]+)\/cancel$/);
         if (request.method === "POST" && cancelAssignment) {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
-          return this.cancelTaskAssignment(userId, teamId, decodeURIComponent(cancelAssignment[1]));
+          return await this.cancelTaskAssignment(
+            userId,
+            teamId,
+            decodeURIComponent(cancelAssignment[1]),
+          );
         }
 
         const cancelByTask = rest.match(/^\/task-assignments\/by-task\/([^/]+)\/cancel$/);
         if (request.method === "POST" && cancelByTask) {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
           this.requireMembership(userId, teamId, "member");
-          const updated = this.requestAssignmentCancel(teamId, decodeURIComponent(cancelByTask[1]));
-          return json({ ok: true, updated, cancelRequested: true });
+          const taskId = decodeURIComponent(cancelByTask[1]);
+          const updated = this.requestAssignmentCancel(teamId, taskId);
+          const txid = await this.publishTeamState(teamId, {
+            emit: async (id) => {
+              const rows = this.sql.exec(
+                `SELECT * FROM task_assignments WHERE team_id = ? AND task_id = ?`,
+                teamId,
+                taskId,
+              ) as Array<{
+                id: string;
+                team_id: string;
+                conversation_id: string;
+                status: string;
+                payload_json: string | null;
+                updated_at: number;
+              }>;
+              for (const row of rows) {
+                await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+                  teamStateSchema.delegatedTasks.update({
+                    value: stateDelegatedTaskValue(row) as never,
+                    headers: { txid: id },
+                  }),
+                );
+              }
+            },
+          });
+          return json({ ok: true, updated, cancelRequested: true, txid });
         }
 
         const conversationMatch = rest.match(/^\/conversations\/([^/]+)$/);
         if (request.method === "PATCH" && conversationMatch) {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
-          return this.patchConversation(
+          return await this.patchConversation(
             userId,
             teamId,
             ConversationId.parse(decodeURIComponent(conversationMatch[1])),
@@ -292,10 +355,85 @@ export class TeamCell {
     }
   }
 
-  private bootstrapPersonal(
+  private async stateStream(userId: string, teamId: TeamId, request: Request): Promise<Response> {
+    this.requireMembership(userId, teamId, "viewer");
+    // Ensure a snapshot exists for teams that predate the state publisher.
+    await this.publishTeamState(teamId, { ensureSnapshotOnly: true });
+    const config = readStreamsConfig(this.env);
+    const upstream = stateStreamUrl(`team:${teamId}`, config);
+    return proxyStreamRead(request, upstream, config.writeToken);
+  }
+
+  private collectSnapshotRows(teamId: TeamId) {
+    const team = this.team(teamId);
+    const conversations = this.sql.exec(
+      `SELECT * FROM conversations WHERE team_id = ? AND archived = 0`,
+      teamId,
+    ) as ConversationRow[];
+    const machines = this.sql.exec(
+      `SELECT * FROM machines WHERE team_id = ?`,
+      teamId,
+    ) as MachineRow[];
+    const delegated = this.sql.exec(
+      `SELECT * FROM task_assignments WHERE team_id = ?`,
+      teamId,
+    ) as Array<{
+      id: string;
+      team_id: string;
+      conversation_id: string;
+      status: string;
+      payload_json: string | null;
+      updated_at: number;
+    }>;
+    return {
+      teams: team ? [stateTeamValue(team)] : [],
+      conversations: conversations.map(stateConversationValue),
+      machines: machines.map(stateMachineValue),
+      delegatedTasks: delegated.map(stateDelegatedTaskValue),
+    };
+  }
+
+  /**
+   * Enqueue Durable State events for a team and flush to the team state stream.
+   * First publish for a team emits snapshot boundaries instead of a lone change.
+   * Flush failures degrade to delayed delivery and must not roll back SQLite mutations.
+   */
+  private async publishTeamState(
+    teamId: TeamId,
+    options: {
+      ensureSnapshotOnly?: boolean;
+      emit?: (txid: string) => Promise<void>;
+    } = {},
+  ): Promise<string> {
+    const publisher = createTeamStatePublisher(this.sql, this.env, teamId);
+    const txid = publisher.txid();
+    try {
+      if (publisher.needsSnapshot()) {
+        await publisher.emitSnapshot(this.collectSnapshotRows(teamId), txid);
+      } else if (!options.ensureSnapshotOnly && options.emit) {
+        await options.emit(txid);
+      } else if (options.ensureSnapshotOnly) {
+        return txid;
+      }
+      const result = await publisher.flush();
+      if (result.delayed > 0) {
+        this.ctx.waitUntil(publisher.flush().catch(() => undefined));
+      }
+    } catch (error) {
+      // Keep SQLite authoritative; retry publish from a later mutation/alarm.
+      this.ctx.waitUntil(publisher.flush().catch(() => undefined));
+      console.warn(
+        "team state publish delayed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return txid;
+  }
+
+  private async bootstrapPersonal(
     headerUserId: string,
     body: { userId?: string; name?: string },
-  ): Response {
+  ): Promise<Response> {
     const userId = parseUserId(body.userId ?? headerUserId);
     const existing = this.personalTeam(userId);
     if (existing) {
@@ -317,7 +455,8 @@ export class TeamCell {
     );
     this.ensureOwnerMembership(teamId, userId);
     const team = this.team(teamId)!;
-    return json({ team: publicTeam(team), created: true }, 201);
+    const txid = await this.publishTeamState(teamId);
+    return json({ team: publicTeam(team), created: true, txid }, 201);
   }
 
   private listTeams(userId: string): Response {
@@ -338,7 +477,7 @@ export class TeamCell {
     });
   }
 
-  private createTeam(userId: string, body: { name?: string }): Response {
+  private async createTeam(userId: string, body: { name?: string }): Promise<Response> {
     const now = Date.now();
     const teamId = TeamId.generate();
     const name = normalizeTeamName(body.name, "Team");
@@ -351,7 +490,8 @@ export class TeamCell {
       now,
     );
     this.insertMembership(teamId, userId, "owner", now);
-    return json({ team: publicTeam(this.team(teamId)!) }, 201);
+    const txid = await this.publishTeamState(teamId);
+    return json({ team: publicTeam(this.team(teamId)!), txid }, 201);
   }
 
   private getTeam(userId: string, teamId: TeamId): Response {
@@ -544,11 +684,11 @@ export class TeamCell {
     return json({ conversations: rows.map(publicConversation) });
   }
 
-  private createConversation(
+  private async createConversation(
     userId: string,
     teamId: TeamId,
     body: { title?: string; profileId?: string },
-  ): Response {
+  ): Promise<Response> {
     const role = this.requireMembership(userId, teamId, "member");
     if (!canWriteConversations(role)) {
       throw new HostError("forbidden", "Requires member role to create conversations", 403);
@@ -573,20 +713,32 @@ export class TeamCell {
     );
     this.sql.exec("UPDATE teams SET updated_at = ? WHERE id = ?", now, teamId);
 
+    const conversation = publicConversation(this.conversation(teamId, conversationId)!);
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.conversations.insert({
+            value: stateConversationValue(this.conversation(teamId, conversationId)!) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
     return json(
       {
-        conversation: publicConversation(this.conversation(teamId, conversationId)!),
+        conversation,
         profileId: body.profileId ?? null,
+        txid,
       },
       201,
     );
   }
 
-  private linkLegacyConversation(
+  private async linkLegacyConversation(
     userId: string,
     teamId: TeamId,
     body: { legacyOwnerId?: string; legacyAgentId?: string; title?: string },
-  ): Response {
+  ): Promise<Response> {
     const role = this.requireMembership(userId, teamId, "member");
     if (!canWriteConversations(role)) {
       throw new HostError("forbidden", "Requires member role to link conversations", 403);
@@ -630,21 +782,32 @@ export class TeamCell {
     );
     this.sql.exec("UPDATE teams SET updated_at = ? WHERE id = ?", now, teamId);
 
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.conversations.insert({
+            value: stateConversationValue(this.conversation(teamId, conversationId)!) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
     return json(
       {
         conversation: publicConversation(this.conversation(teamId, conversationId)!),
         linked: true,
+        txid,
       },
       201,
     );
   }
 
-  private patchConversation(
+  private async patchConversation(
     userId: string,
     teamId: TeamId,
     conversationId: ConversationId,
     body: { title?: string; archived?: boolean; expectedActivityRevision?: number },
-  ): Response {
+  ): Promise<Response> {
     const role = this.requireMembership(userId, teamId, "member");
     if (!canWriteConversations(role)) {
       throw new HostError("forbidden", "Requires member role to update conversations", 403);
@@ -707,16 +870,26 @@ export class TeamCell {
       throw new HostError("conflict", "Stale activity revision", 409);
     }
 
-    return json({ conversation: publicConversation(updated!) });
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.conversations.update({
+            value: stateConversationValue(updated!) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
+    return json({ conversation: publicConversation(updated!), txid });
   }
 
-  private activity(body: {
+  private async activity(body: {
     teamId?: string;
     conversationId?: string;
     lastMessage?: string;
     runStatus?: string;
     activityRevision?: number;
-  }): Response {
+  }): Promise<Response> {
     const teamId = TeamId.parse(body.teamId);
     const conversationId = ConversationId.parse(body.conversationId);
     const row = this.conversation(teamId, conversationId);
@@ -757,7 +930,18 @@ export class TeamCell {
       incomingRevision,
     );
 
-    return json({ accepted: true, activityRevision: revision });
+    const updated = this.conversation(teamId, conversationId)!;
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.conversations.update({
+            value: stateConversationValue(updated) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
+    return json({ accepted: true, activityRevision: revision, txid });
   }
 
   private team(id: TeamId): TeamRow | null {
@@ -899,12 +1083,25 @@ export class TeamCell {
       this.sql.exec("UPDATE enrollment_tokens SET revoked_at = ? WHERE id = ?", now, enrollment.id);
     });
 
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        const row = this.machine(machineId)!;
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.machines.insert({
+            value: stateMachineValue(row) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
+
     return json(
       {
         machineId,
         teamId,
         credential,
         status: "approved",
+        txid,
       },
       201,
     );
@@ -980,6 +1177,30 @@ export class TeamCell {
               taskCellName(String(pending.team_id), String(pending.conversation_id)),
           },
         });
+        const assignmentRow = this.sql.one<{
+          id: string;
+          team_id: string;
+          conversation_id: string;
+          status: string;
+          payload_json: string | null;
+          updated_at: number;
+        }>("SELECT * FROM task_assignments WHERE id = ?", pending.id);
+        if (assignmentRow) {
+          await this.publishTeamState(TeamId.parse(pending.team_id), {
+            emit: async (id) => {
+              await createTeamStatePublisher(
+                this.sql,
+                this.env,
+                TeamId.parse(pending.team_id),
+              ).enqueue(
+                teamStateSchema.delegatedTasks.update({
+                  value: stateDelegatedTaskValue(assignmentRow) as never,
+                  headers: { txid: id },
+                }),
+              );
+            },
+          }).catch(() => undefined);
+        }
       }
     }
 
@@ -1095,6 +1316,19 @@ export class TeamCell {
     }
 
     await this.armMachineSweepAlarm();
+    if (machine.status === "stale") {
+      await this.publishTeamState(TeamId.parse(machine.team_id), {
+        emit: async (id) => {
+          const row = this.machine(machineId)!;
+          await createTeamStatePublisher(this.sql, this.env, TeamId.parse(machine.team_id)).enqueue(
+            teamStateSchema.machines.update({
+              value: stateMachineValue(row) as never,
+              headers: { txid: id },
+            }),
+          );
+        },
+      }).catch(() => undefined);
+    }
     return json({
       ok: true,
       machineId,
@@ -1166,10 +1400,22 @@ export class TeamCell {
 
     const now = Date.now();
     this.sql.exec("UPDATE machines SET status = 'draining' WHERE id = ?", machineId);
-    return json({ machineId, status: "draining", updatedAt: now });
+    const teamId = TeamId.parse(machine.team_id);
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        const row = this.machine(machineId)!;
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.machines.update({
+            value: stateMachineValue(row) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
+    return json({ machineId, status: "draining", updatedAt: now, txid });
   }
 
-  private revokeMachine(userId: string, machineId: MachineId): Response {
+  private async revokeMachine(userId: string, machineId: MachineId): Promise<Response> {
     const machine = this.machine(machineId);
     if (!machine) throw new HostError("not_found", "Machine not found", 404);
     const role = this.requireMembership(userId, TeamId.parse(machine.team_id), "admin");
@@ -1181,7 +1427,19 @@ export class TeamCell {
       "UPDATE machines SET status = 'revoked', credential_hash = NULL WHERE id = ?",
       machineId,
     );
-    return json({ machineId, status: "revoked", revokedAt: now });
+    const teamId = TeamId.parse(machine.team_id);
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        const row = this.machine(machineId)!;
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.machines.update({
+            value: stateMachineValue(row) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
+    return json({ machineId, status: "revoked", revokedAt: now, txid });
   }
 
   private listMachines(userId: string, teamId: TeamId): Response {
@@ -1220,7 +1478,7 @@ export class TeamCell {
     });
   }
 
-  private queueTaskAssignmentRoute(
+  private async queueTaskAssignmentRoute(
     userId: string,
     teamId: TeamId,
     body: {
@@ -1229,20 +1487,39 @@ export class TeamCell {
       conversationId?: string;
       payload?: Record<string, unknown>;
     },
-  ): Response {
+  ): Promise<Response> {
     this.requireMembership(userId, teamId, "member");
     const taskId = TaskId.parse(body.taskId);
     const attemptId = String(body.attemptId ?? "").trim();
     if (!attemptId) throw new HostError("invalid", "attemptId required", 400);
     const conversationId = ConversationId.parse(body.conversationId);
-    this.queueTaskAssignment({
+    const assignmentId = this.queueTaskAssignment({
       teamId,
       taskId,
       attemptId,
       conversationId,
       payload: body.payload,
     });
-    return json({ queued: true, taskId, attemptId, conversationId }, 201);
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        const row = this.sql.one<{
+          id: string;
+          team_id: string;
+          conversation_id: string;
+          status: string;
+          payload_json: string | null;
+          updated_at: number;
+        }>("SELECT * FROM task_assignments WHERE id = ?", assignmentId);
+        if (!row) return;
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.delegatedTasks.insert({
+            value: stateDelegatedTaskValue(row) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
+    return json({ queued: true, taskId, attemptId, conversationId, txid }, 201);
   }
 
   /** Queue a task assignment for supervisor pickup. */
@@ -1252,14 +1529,15 @@ export class TeamCell {
     attemptId: string;
     conversationId: ConversationId;
     payload?: Record<string, unknown>;
-  }): void {
+  }): string {
     const now = Date.now();
+    const assignmentId = MembershipId.generate();
     this.sql.exec(
       `INSERT INTO task_assignments(
          id, team_id, task_id, attempt_id, conversation_id, machine_id, status,
          payload_json, cancel_requested, created_at, updated_at
        ) VALUES(?, ?, ?, ?, ?, NULL, 'pending', ?, 0, ?, ?)`,
-      MembershipId.generate(),
+      assignmentId,
       input.teamId,
       input.taskId,
       input.attemptId,
@@ -1269,6 +1547,7 @@ export class TeamCell {
       now,
     );
     void this.armMachineSweepAlarm();
+    return assignmentId;
   }
 
   /** Mark cancel_requested so the next poll delivers a cancel to the machine. */
@@ -1292,7 +1571,11 @@ export class TeamCell {
     return before.length;
   }
 
-  private cancelTaskAssignment(userId: string, teamId: TeamId, assignmentId: string): Response {
+  private async cancelTaskAssignment(
+    userId: string,
+    teamId: TeamId,
+    assignmentId: string,
+  ): Promise<Response> {
     this.requireMembership(userId, teamId, "member");
     const row = this.sql.one<{ id: string; team_id: string; task_id: string }>(
       "SELECT id, team_id, task_id FROM task_assignments WHERE id = ? AND team_id = ?",
@@ -1308,18 +1591,40 @@ export class TeamCell {
       now,
       assignmentId,
     );
-    return json({ ok: true, assignmentId, taskId: row.task_id, cancelRequested: true });
+    const txid = await this.publishTeamState(teamId, {
+      emit: async (id) => {
+        const updated = this.sql.one<{
+          id: string;
+          team_id: string;
+          conversation_id: string;
+          status: string;
+          payload_json: string | null;
+          updated_at: number;
+        }>("SELECT * FROM task_assignments WHERE id = ?", assignmentId);
+        if (!updated) return;
+        await createTeamStatePublisher(this.sql, this.env, teamId).enqueue(
+          teamStateSchema.delegatedTasks.update({
+            value: stateDelegatedTaskValue(updated) as never,
+            headers: { txid: id },
+          }),
+        );
+      },
+    });
+    return json({ ok: true, assignmentId, taskId: row.task_id, cancelRequested: true, txid });
   }
 
-  private applyMachineSweep(now: number): void {
+  private applyMachineSweep(now: number): string[] {
     const machines = this.sql.exec(
-      `SELECT id, status, last_seen_at FROM machines
+      `SELECT id, team_id, status, last_seen_at FROM machines
        WHERE status IN ('approved', 'stale')`,
-    ) as Array<{ id: string; status: string; last_seen_at: number | null }>;
+    ) as Array<{ id: string; team_id: string; status: string; last_seen_at: number | null }>;
     const stale = decideStaleMachines(machines, now, MACHINE_STALE_AFTER_MS);
-    if (stale.length === 0) return;
+    if (stale.length === 0) return [];
 
     const staleIds = new Set(stale.map((row) => row.machineId));
+    const teamIds = new Set(
+      machines.filter((row) => staleIds.has(row.id)).map((row) => String(row.team_id)),
+    );
     const assignments = this.sql.exec(
       `SELECT id, machine_id, status FROM task_assignments
        WHERE status = 'assigned' AND machine_id IS NOT NULL`,
@@ -1343,6 +1648,7 @@ export class TeamCell {
         );
       }
     });
+    return [...teamIds];
   }
 
   private async armMachineSweepAlarm(): Promise<void> {

@@ -25,17 +25,21 @@ Cross-cell effects use durable intents (e.g. task completion → conversation
 ## Topology
 
 ```
-Browsers (useChat + optional StreamDB)
+Browsers (useChat + StreamDB team state)
   → Worker (auth, routing)
     → IdentityCell
-    → TeamCell (global registry)
+    → TeamCell (global registry + Durable State outbox)
     → AgentCell (owner:chat — transcript, commands, coordinator inbox)
     → TaskCell (team:conv:tasks workspace)
-    → Durable Streams sidecar (derived chat/state transport)
-  → Supervisor (registered machine)
-    → Docker runner (fixture | claude-code | codex | grok-build | opencode)
+    → Durable Streams sidecar
+         /v1/stream/chat/:agent
+         /v1/stream/state/team:id
+  → Supervisor (registered machine; journal tail + lease heartbeat)
+    → Docker runner (NDJSON journal + exit sentinel)
         → TaskCell tool-exec (scoped host tools)
 ```
+
+See [TASK-LIFECYCLE.md](./TASK-LIFECYCLE.md) and [STREAMS.md](./STREAMS.md).
 
 Legacy workbench path:
 

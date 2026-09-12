@@ -929,8 +929,73 @@ async function main() {
           queued.response.ok &&
           cancelled.response.ok &&
           Number(cancelled.body.updated ?? 0) >= 1,
-        `renew=${renewed.response.status} delta=${afterExpiry - beforeExpiry} cancelUpdated=${cancelled.body.updated}`,
+        `renew=${renewed.response.status} delta=${afterExpiry - beforeExpiry} cancelUpdated=${cancelled.body.updated} conv=${conv.response.status} task=${taskCreated.response.status} attempt=${attemptCreated.response.status} cancel=${cancelled.response.status}`,
       );
+    }
+
+    // Team Durable State stream materializes to REST collections.
+    {
+      const boot = await json("/api/teams/bootstrap-personal", {
+        method: "POST",
+        headers: auth(token),
+        body: "{}",
+      });
+      const teamId = String(boot.body.team?.id ?? "");
+      const created = await json(`/api/teams/${teamId}/conversations`, {
+        method: "POST",
+        headers: auth(token),
+        body: JSON.stringify({ title: `State stream ${Date.now()}` }),
+      });
+      const conversationId = String(created.body.conversation?.id ?? "");
+      const renamedTitle = `Renamed ${Date.now()}`;
+      const patched = await json(`/api/teams/${teamId}/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: auth(token),
+        body: JSON.stringify({ title: renamedTitle }),
+      });
+      const list = await json(`/api/teams/${teamId}/conversations`, {
+        headers: auth(token),
+      });
+      let matched = false;
+      let detail = "";
+      try {
+        const { MaterializedState, isChangeEvent } = await import("@durable-streams/state");
+        const { stream } = await import("@durable-streams/client");
+        const state = new MaterializedState();
+        for (let i = 0; i < 40; i += 1) {
+          const response = await stream({
+            url: `${base}/api/teams/${encodeURIComponent(teamId)}/state/stream`,
+            headers: auth(token),
+            json: true,
+            live: false,
+            offset: "-1",
+          });
+          const events = await response.json();
+          for (const event of events) {
+            if (isChangeEvent(event)) state.apply(event);
+          }
+          const streamConv = state.get("conversation", conversationId);
+          const restTitle = (list.body.conversations ?? []).find(
+            (row) => String(row.id) === conversationId,
+          )?.title;
+          matched =
+            created.response.ok &&
+            patched.response.ok &&
+            Boolean(created.body.txid || patched.body.txid) &&
+            String(streamConv?.title ?? "") === renamedTitle &&
+            String(restTitle ?? "") === renamedTitle;
+          detail = `streamTitle=${streamConv?.title ?? ""} rest=${restTitle ?? ""} created=${created.response.status} patched=${patched.response.status} events=${events.length} txid=${patched.body.txid ?? created.body.txid ?? ""}`;
+          if (matched) break;
+          await wait(250);
+        }
+        log("team-state-materialize", matched, detail);
+      } catch (error) {
+        log(
+          "team-state-materialize",
+          false,
+          `error=${error instanceof Error ? error.message : String(error)} created=${created.response.status} patched=${patched.response.status}`,
+        );
+      }
     }
 
     log("live-provider-smoke", false, "UNRUN: pass --live-smoke with credentials");

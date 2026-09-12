@@ -99,7 +99,11 @@ const env = {
 const celld = trackChild(
   spawn(
     "celld",
-    celldDevArgs(project, { port: celldPort, watch: process.env.CELLD_NO_WATCH !== "1" }),
+    celldDevArgs(project, {
+      port: celldPort,
+      watch: process.env.CELLD_NO_WATCH !== "1",
+      clean: process.env.CELLD_DEV_CLEAN === "1",
+    }),
     {
       cwd: project,
       env,

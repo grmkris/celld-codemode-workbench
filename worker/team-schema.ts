@@ -157,6 +157,25 @@ CREATE TABLE IF NOT EXISTS task_assignments (
 
 CREATE INDEX IF NOT EXISTS idx_task_assignments_machine ON task_assignments(machine_id, status);
 CREATE INDEX IF NOT EXISTS idx_task_assignments_team ON task_assignments(team_id);
+
+CREATE TABLE IF NOT EXISTS outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  published_offset TEXT,
+  acked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS publisher (
+  key TEXT PRIMARY KEY,
+  producer_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL,
+  last_acked_offset TEXT
+);
 `;
 
-export const TEAM_SCHEMA_VERSION = 3;
+export const TEAM_SCHEMA_VERSION = 4;

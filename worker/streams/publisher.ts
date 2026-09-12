@@ -93,8 +93,8 @@ export class OutboxPublisher {
     return eventId;
   }
 
-  async flush(streamUrl: string): Promise<OutboxFlushResult> {
-    const pending = this.pendingRows();
+  async flush(streamUrl: string, options: { kind?: string } = {}): Promise<OutboxFlushResult> {
+    const pending = this.pendingRows(options.kind);
     if (pending.length === 0) return { published: 0, delayed: 0 };
 
     const authHeaders = streamsWriteHeaders(this.options.config);
@@ -103,6 +103,13 @@ export class OutboxPublisher {
     try {
       const handle = await this.connectOrCreate(streamUrl, authHeaders);
       let state = this.loadPublisherState();
+      // Each flush builds a fresh IdempotentProducer, which always starts at
+      // seq 0. Reusing an epoch whose seq was already consumed returns HTTP 204
+      // duplicates with an empty offset — bump the epoch so new rows append.
+      if (state.last_seq > 0) {
+        state = { ...state, epoch: state.epoch + 1, last_seq: 0 };
+        this.savePublisherState(state);
+      }
       let remaining = pending;
 
       while (remaining.length > 0) {
@@ -172,7 +179,16 @@ export class OutboxPublisher {
     }
   }
 
-  pendingRows(): OutboxRow[] {
+  pendingRows(kind?: string): OutboxRow[] {
+    if (kind) {
+      return this.sql.exec(
+        `SELECT id, event_id, kind, payload, fingerprint, published_offset, acked_at, created_at
+         FROM outbox
+         WHERE acked_at IS NULL AND kind = ?
+         ORDER BY id ASC`,
+        kind,
+      ) as unknown as OutboxRow[];
+    }
     return this.sql.exec(
       `SELECT id, event_id, kind, payload, fingerprint, published_offset, acked_at, created_at
        FROM outbox

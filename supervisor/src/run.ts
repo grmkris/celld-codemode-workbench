@@ -9,6 +9,7 @@ import {
   type Assignment,
 } from "./docker.js";
 import { SupervisorJournal } from "./journal.js";
+import { startJournalTail, type JournalTailHandle } from "./journal-tail.js";
 import { credentialsDir } from "./credentials.js";
 
 type ActiveRun = {
@@ -17,6 +18,7 @@ type ActiveRun = {
   lease?: string;
   generation?: number;
   taskCellAddress?: string;
+  journalTail?: JournalTailHandle;
 };
 
 export async function runSupervisor(
@@ -37,6 +39,48 @@ export async function runSupervisor(
   }
 
   console.log(`supervisor run name=${creds.name} machine=${creds.machineId} team=${creds.teamId}`);
+
+  // Resume journal tails for environments still marked active after a restart.
+  if (docker) {
+    for (const env of journal.activeEnvironments()) {
+      if (!env.container_id) continue;
+      activeContainers.add(env.container_id);
+      if (!env.assignment_json) continue;
+      let assignment: Assignment;
+      try {
+        assignment = JSON.parse(env.assignment_json) as Assignment;
+      } catch {
+        continue;
+      }
+      if (!assignment?.attemptId) continue;
+      if (activeByAttempt.has(assignment.attemptId)) continue;
+      const payload = (assignment.payload ?? {}) as Record<string, unknown>;
+      const lease = String(payload.lease ?? "");
+      const generation = Number(payload.generation ?? 0);
+      const taskCellAddress = String(payload.taskCellAddress ?? "");
+      const journalTail = await startJournalTail({
+        docker,
+        client,
+        journal,
+        assignment,
+        containerId: env.container_id,
+        lease,
+        generation,
+        taskCellAddress,
+      });
+      activeByAttempt.set(assignment.attemptId, {
+        containerId: env.container_id,
+        assignment,
+        lease,
+        generation,
+        taskCellAddress,
+        journalTail,
+      });
+      console.log(
+        `resumed journal tail attempt=${assignment.attemptId} container=${env.container_id}`,
+      );
+    }
+  }
 
   for (;;) {
     const attempts = [...activeByAttempt.values()]
@@ -67,6 +111,7 @@ export async function runSupervisor(
       console.log(`cancel signal task=${cancel.taskId} attempt=${cancel.attemptId}`);
       const active = activeByAttempt.get(cancel.attemptId);
       if (active && docker) {
+        await active.journalTail?.stop();
         await stopContainer(docker, active.containerId);
         activeContainers.delete(active.containerId);
         activeByAttempt.delete(cancel.attemptId);
@@ -104,12 +149,26 @@ export async function runSupervisor(
         const envId = crypto.randomUUID();
         const handle = await createRunnerContainer(docker, creds, assignment);
         activeContainers.add(handle.id);
+        const lease = String(payload.lease ?? "");
+        const generation = Number(payload.generation ?? 0);
+        const taskCellAddress = String(payload.taskCellAddress ?? "");
+        const journalTail = await startJournalTail({
+          docker,
+          client,
+          journal,
+          assignment,
+          containerId: handle.id,
+          lease,
+          generation,
+          taskCellAddress,
+        });
         activeByAttempt.set(assignment.attemptId, {
           containerId: handle.id,
           assignment,
-          lease: String(payload.lease ?? ""),
-          generation: Number(payload.generation ?? 0),
-          taskCellAddress: String(payload.taskCellAddress ?? ""),
+          lease,
+          generation,
+          taskCellAddress,
+          journalTail,
         });
         journal.recordEnvironment({
           id: envId,
@@ -117,6 +176,7 @@ export async function runSupervisor(
           containerId: handle.id,
           status: "active",
           assignmentId: assignment.assignmentId,
+          assignment,
         });
         console.log(`started container ${handle.name} for attempt ${assignment.attemptId}`);
       } else {
