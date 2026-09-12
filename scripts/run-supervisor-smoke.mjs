@@ -13,9 +13,9 @@ async function dockerAvailable() {
   try {
     const docker = new Dockerode({ socketPath: "/var/run/docker.sock" });
     await docker.ping();
-    return true;
+    return docker;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -31,7 +31,8 @@ if (!runnerBuilt || !supervisorBuilt) {
   if (build.status !== 0) process.exit(build.status ?? 1);
 }
 
-if (!(await dockerAvailable())) {
+const docker = await dockerAvailable();
+if (!docker) {
   console.log("SKIP supervisor smoke: Docker unavailable");
   process.exit(0);
 }
@@ -66,3 +67,34 @@ if (fixture.status !== 0) {
 
 console.log("supervisor smoke: fixture runner OK");
 console.log(fixture.stdout.trim());
+
+// Cancel must be able to stop a running container (same helper the supervisor uses).
+const image = process.env.CELLD_RUNNER_IMAGE ?? "alpine:3.20";
+try {
+  const stream = await docker.pull(image);
+  await new Promise((resolve, reject) => {
+    docker.modem.followProgress(stream, (error) => (error ? reject(error) : resolve(undefined)));
+  });
+} catch {
+  // image may already exist locally
+}
+const container = await docker.createContainer({
+  Image: image,
+  Cmd: ["sleep", "60"],
+  Labels: { "celld.env": "disposable", "celld.attempt": "att_cancel_smoke" },
+  HostConfig: { AutoRemove: false },
+});
+await container.start();
+try {
+  await container.stop({ t: 10 });
+} catch {
+  // already stopped
+}
+const inspected = await container.inspect();
+if (inspected.State.Running) {
+  console.error("cancel-stops-container FAILED: container still running");
+  await container.remove({ force: true }).catch(() => undefined);
+  process.exit(1);
+}
+await container.remove({ force: true }).catch(() => undefined);
+console.log("supervisor smoke: cancel-stops-container OK");

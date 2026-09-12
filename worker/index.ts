@@ -175,19 +175,6 @@ export default {
         return teamStub(env).fetch(forwardTeamPath(request, user, "/bootstrap-personal"));
       }
 
-      if (url.pathname === "/api/teams" || url.pathname.startsWith("/api/teams/")) {
-        const rest = url.pathname === "/api/teams" ? "/teams" : url.pathname.slice("/api".length);
-        return teamStub(env).fetch(forwardTeamPath(request, user, rest));
-      }
-
-      if (
-        url.pathname === "/api/invitations/accept" ||
-        url.pathname.startsWith("/api/invitations/")
-      ) {
-        const rest = url.pathname.slice("/api".length);
-        return teamStub(env).fetch(forwardTeamPath(request, user, rest));
-      }
-
       const taskApi = url.pathname.match(
         /^\/api\/teams\/([^/]+)\/conversations\/([^/]+)\/tasks(\/.*)?$/,
       );
@@ -208,6 +195,19 @@ export default {
           forwardWithUser(request, user),
         );
         return taskStub(env, workspaceKey).fetch(forwarded);
+      }
+
+      if (url.pathname === "/api/teams" || url.pathname.startsWith("/api/teams/")) {
+        const rest = url.pathname === "/api/teams" ? "/teams" : url.pathname.slice("/api".length);
+        return teamStub(env).fetch(forwardTeamPath(request, user, rest));
+      }
+
+      if (
+        url.pathname === "/api/invitations/accept" ||
+        url.pathname.startsWith("/api/invitations/")
+      ) {
+        const rest = url.pathname.slice("/api".length);
+        return teamStub(env).fetch(forwardTeamPath(request, user, rest));
       }
 
       const match = url.pathname.match(/^\/api\/agents\/([^/]+)(\/.*)?$/);

@@ -96,8 +96,12 @@ export async function submitDelegation(input: {
     }),
   );
   const attemptBody = await parseJson(attemptResponse);
-  const attemptId = String((attemptBody.attempt as Record<string, unknown> | undefined)?.id ?? "");
+  const attempt = attemptBody.attempt as Record<string, unknown> | undefined;
+  const attemptId = String(attempt?.id ?? "");
   if (!attemptId) throw new HostError("upstream_error", "TaskCell did not return attempt id", 502);
+  const lease = String(attemptBody.lease ?? "");
+  const generation = Number(attemptBody.generation ?? attempt?.generation ?? 0);
+  const taskCellAddress = taskCellName(input.ctx.teamId, input.ctx.conversationId);
 
   const queueResponse = await teamStub(input.env).fetch(
     new Request(
@@ -118,6 +122,9 @@ export async function submitDelegation(input: {
             profileId: input.profileId ?? null,
             prompt: input.prompt ?? input.title,
             sourceCellKey,
+            lease,
+            generation,
+            taskCellAddress,
           },
         }),
       },
@@ -151,7 +158,26 @@ export async function cancelDelegation(
       body: "{}",
     }),
   );
-  return parseJson(response);
+  const body = await parseJson(response);
+
+  await teamStub(env)
+    .fetch(
+      new Request(
+        `https://team.internal/teams/${encodeURIComponent(ctx.teamId)}/task-assignments/by-task/${encodeURIComponent(taskId)}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-celld-user": ctx.ownerId,
+            "x-celld-owner": ctx.ownerId,
+          },
+          body: "{}",
+        },
+      ),
+    )
+    .catch(() => undefined);
+
+  return body;
 }
 
 export async function listArtifacts(

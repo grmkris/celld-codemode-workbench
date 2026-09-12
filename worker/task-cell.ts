@@ -20,7 +20,13 @@ import {
   transitionCancellation,
   type CancellationState,
 } from "./task/cancellation";
-import { assertLeaseFence, type AttemptFence } from "./task/lease";
+import {
+  assertLeaseFence,
+  clampLeaseTtlMs,
+  decideExpiredLeases,
+  renewLease,
+  type AttemptFence,
+} from "./task/lease";
 import { notifyAgentInbox } from "./delegation/client";
 import { TASK_SCHEMA_SQL, TASK_SCHEMA_VERSION } from "./task-schema";
 import { Sql } from "./sql";
@@ -62,7 +68,13 @@ export class TaskCell {
     this.sql = new Sql(ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       this.sql.migrate(TASK_SCHEMA_SQL, TASK_SCHEMA_VERSION);
+      await this.armLeaseAlarm();
     });
+  }
+
+  async alarm(): Promise<void> {
+    this.applyLeaseExpiry(Date.now());
+    await this.armLeaseAlarm();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -90,6 +102,9 @@ export class TaskCell {
         if (request.method === "POST" && rest === "/cancel") {
           return this.cancelTask(taskId);
         }
+        if (request.method === "POST" && rest === "/signal-cancel") {
+          return json({ cancellationState: this.signalCancellation(taskId) });
+        }
         if (request.method === "POST" && rest === "/complete") {
           return await this.completeTask(taskId, await request.json());
         }
@@ -107,6 +122,14 @@ export class TaskCell {
       if (request.method === "POST" && attemptEvents) {
         return this.submitAttemptEvents(
           AttemptId.parse(decodeURIComponent(attemptEvents[1])),
+          await request.json(),
+        );
+      }
+
+      const attemptLeaseRenew = url.pathname.match(/^\/attempts\/([^/]+)\/lease\/renew$/);
+      if (request.method === "POST" && attemptLeaseRenew) {
+        return await this.renewAttemptLease(
+          AttemptId.parse(decodeURIComponent(attemptLeaseRenew[1])),
           await request.json(),
         );
       }
@@ -375,7 +398,7 @@ export class TaskCell {
     const attemptId = AttemptId.generate();
     const leaseToken = crypto.randomUUID() + crypto.randomUUID();
     const leaseHash = await sha256Hex(leaseToken);
-    const ttlMs = Math.min(Math.max(Number(body.leaseTtlMs ?? 300_000), 30_000), 3_600_000);
+    const ttlMs = clampLeaseTtlMs(body.leaseTtlMs);
     const now = Date.now();
     const expiresAt = now + ttlMs;
     const leaseId = EventId.generate();
@@ -411,6 +434,8 @@ export class TaskCell {
       );
     });
 
+    await this.armLeaseAlarm();
+
     return json(
       {
         attempt: publicAttempt(this.attempt(attemptId)!),
@@ -420,6 +445,49 @@ export class TaskCell {
       },
       201,
     );
+  }
+
+  private async renewAttemptLease(
+    attemptId: AttemptId,
+    body: { lease?: string; generation?: number; ttlMs?: number },
+  ): Promise<Response> {
+    const attempt = await this.requireActiveAttempt(attemptId, body.lease, body.generation);
+    const now = Date.now();
+    const leaseRow = this.sql.one<{
+      token_hash: string;
+      generation: number;
+      expires_at: number;
+      revoked_at: number | null;
+    }>(
+      `SELECT token_hash, generation, expires_at, revoked_at FROM leases
+       WHERE attempt_id = ? AND revoked_at IS NULL
+       ORDER BY created_at DESC LIMIT 1`,
+      attemptId,
+    );
+    if (!leaseRow) throw new HostError("not_found", "Lease not found", 404);
+
+    const renewed = renewLease(leaseRow, now, body.ttlMs);
+    this.sql.transaction(() => {
+      this.sql.exec(
+        "UPDATE attempts SET lease_expires_at = ? WHERE id = ?",
+        renewed.expires_at,
+        attemptId,
+      );
+      this.sql.exec(
+        `UPDATE leases SET expires_at = ?
+         WHERE attempt_id = ? AND revoked_at IS NULL AND generation = ?`,
+        renewed.expires_at,
+        attemptId,
+        attempt.generation,
+      );
+    });
+    await this.armLeaseAlarm();
+    return json({
+      ok: true,
+      attemptId,
+      generation: attempt.generation,
+      leaseExpiresAt: renewed.expires_at,
+    });
   }
 
   private async submitAttemptEvents(
@@ -453,29 +521,56 @@ export class TaskCell {
         if (bytesOf(payload) > LIMITS.resultBytes) {
           throw new HostError("invalid", "Event payload too large", 400);
         }
+        const kind = String(event.kind ?? "event").slice(0, 64);
         this.sql.exec(
           `INSERT INTO attempt_events(id, attempt_id, seq, kind, payload_json, created_at)
            VALUES(?, ?, ?, ?, ?, ?)`,
           EventId.generate(),
           attemptId,
           seq,
-          String(event.kind ?? "event").slice(0, 64),
+          kind,
           payload,
           now,
         );
+
+        if (kind === "attempt.cancelled") {
+          const task = this.task(TaskId.parse(attempt.task_id));
+          if (task) {
+            const current = parseCancellationState(task.cancellation_state);
+            if (!cancellationIsTerminal(current)) {
+              const signalled = transitionCancellation(current, "signalled");
+              const confirmed = transitionCancellation(signalled, "confirmed");
+              this.sql.exec(
+                "UPDATE tasks SET cancellation_state = ?, status = 'cancelled', updated_at = ? WHERE id = ?",
+                confirmed,
+                now,
+                task.id,
+              );
+              this.sql.exec(
+                `UPDATE attempts SET status = 'cancelled', finished_at = ?
+                 WHERE id = ? AND status IN ('pending', 'running')`,
+                now,
+                attemptId,
+              );
+            }
+          }
+        }
       }
 
       if (attempt.status === "pending") {
-        this.sql.exec(
-          "UPDATE attempts SET status = 'running', started_at = ? WHERE id = ?",
-          now,
-          attemptId,
-        );
-        this.sql.exec(
-          `UPDATE tasks SET status = 'running', updated_at = ? WHERE id = ?`,
-          now,
-          attempt.task_id,
-        );
+        const stillActive = this.attempt(attemptId);
+        if (stillActive && (stillActive.status === "pending" || stillActive.status === "running")) {
+          this.sql.exec(
+            "UPDATE attempts SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'",
+            now,
+            attemptId,
+          );
+          this.sql.exec(
+            `UPDATE tasks SET status = 'running', updated_at = ? WHERE id = ? AND status != 'cancelled'`,
+            now,
+            attempt.task_id,
+          );
+        }
       }
     });
 
@@ -672,6 +767,66 @@ export class TaskCell {
 
   private task(id: TaskId): TaskRow | null {
     return this.sql.one<TaskRow>("SELECT * FROM tasks WHERE id = ?", id);
+  }
+
+  private applyLeaseExpiry(now: number): void {
+    const active = this.sql.exec(
+      `SELECT id, task_id, generation, status, lease_expires_at
+       FROM attempts
+       WHERE status IN ('pending', 'running')`,
+    ) as Array<{
+      id: string;
+      task_id: string;
+      generation: number;
+      status: string;
+      lease_expires_at: number | null;
+    }>;
+    const decisions = decideExpiredLeases(active, now);
+    if (decisions.length === 0) return;
+
+    this.sql.transaction(() => {
+      for (const decision of decisions) {
+        this.sql.exec(
+          `UPDATE attempts SET status = 'lost', finished_at = ? WHERE id = ? AND status IN ('pending', 'running')`,
+          now,
+          decision.attemptId,
+        );
+        this.sql.exec(
+          "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+          decision.taskStatus === "pending" ? "pending" : "failed",
+          now,
+          decision.taskId,
+        );
+        const lastSeq = this.sql.one<{ seq: number }>(
+          "SELECT MAX(seq) AS seq FROM attempt_events WHERE attempt_id = ?",
+          decision.attemptId,
+        );
+        this.sql.exec(
+          `INSERT INTO attempt_events(id, attempt_id, seq, kind, payload_json, created_at)
+           VALUES(?, ?, ?, 'lease.expired', ?, ?)`,
+          EventId.generate(),
+          decision.attemptId,
+          Number(lastSeq?.seq ?? 0) + 1,
+          stableJson({ taskId: decision.taskId, taskStatus: decision.taskStatus }),
+          now,
+        );
+        this.sql.exec(
+          `UPDATE leases SET revoked_at = ?
+           WHERE attempt_id = ? AND revoked_at IS NULL`,
+          now,
+          decision.attemptId,
+        );
+      }
+    });
+  }
+
+  private async armLeaseAlarm(): Promise<void> {
+    const active = this.sql.one<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM attempts WHERE status IN ('pending', 'running')`,
+    );
+    if (Number(active?.n ?? 0) === 0) return;
+    const next = Date.now() + 30_000;
+    await this.ctx.storage.setAlarm(next);
   }
 
   private attempt(id: AttemptId): AttemptRow | null {

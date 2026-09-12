@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,
   generation INTEGER NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+  status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled', 'lost')),
   lease_token_hash TEXT,
   lease_expires_at INTEGER,
   machine_id TEXT,
@@ -86,4 +86,4 @@ CREATE TABLE IF NOT EXISTS leases (
 CREATE INDEX IF NOT EXISTS idx_leases_attempt ON leases(attempt_id);
 `;
 
-export const TASK_SCHEMA_VERSION = 2;
+export const TASK_SCHEMA_VERSION = 3;

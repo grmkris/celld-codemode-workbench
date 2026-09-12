@@ -42,7 +42,8 @@ export function stableJson(value: unknown): string {
   }
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, item]) => item !== undefined)
-    .toSorted(([left], [right]) => left.localeCompare(right));
+    .slice()
+    .sort(([left], [right]) => left.localeCompare(right));
   return `{${entries
     .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
     .join(",")}}`;

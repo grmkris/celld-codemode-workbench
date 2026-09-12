@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS machines (
   id TEXT PRIMARY KEY,
   team_id TEXT NOT NULL,
   name TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'draining', 'revoked')),
+  status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'draining', 'revoked', 'stale')),
   labels_json TEXT NOT NULL DEFAULT '{}',
   capacities_json TEXT NOT NULL DEFAULT '{}',
   credential_hash TEXT,
@@ -159,4 +159,4 @@ CREATE INDEX IF NOT EXISTS idx_task_assignments_machine ON task_assignments(mach
 CREATE INDEX IF NOT EXISTS idx_task_assignments_team ON task_assignments(team_id);
 `;
 
-export const TEAM_SCHEMA_VERSION = 2;
+export const TEAM_SCHEMA_VERSION = 3;

@@ -13,6 +13,7 @@ import {
   TaskId,
   TeamId,
   conversationCellName,
+  taskCellName,
   validAgentId,
   validOwnerId,
 } from "../shared/ids";
@@ -33,6 +34,12 @@ import {
   parseLabels,
   type MachineRow,
 } from "./team/machines";
+import {
+  decideRequeueAssignments,
+  decideStaleMachines,
+  MACHINE_STALE_AFTER_MS,
+  TEAM_SWEEP_ALARM_MS,
+} from "./team/sweep";
 import { LIMITS } from "../shared/limits";
 import {
   assertActivityRevision,
@@ -100,7 +107,13 @@ export class TeamCell {
     this.sql = new Sql(ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       this.sql.migrate(TEAM_SCHEMA_SQL, TEAM_SCHEMA_VERSION);
+      await this.armMachineSweepAlarm();
     });
+  }
+
+  async alarm(): Promise<void> {
+    this.applyMachineSweep(Date.now());
+    await this.armMachineSweepAlarm();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -129,10 +142,28 @@ export class TeamCell {
           return await this.pollMachine(machineId, await request.json(), request);
         }
         if (request.method === "POST" && rest === "/heartbeat") {
-          return await this.heartbeatMachine(machineId, request);
+          const body = (await request.json().catch(() => ({}))) as {
+            attempts?: Array<{
+              attemptId?: string;
+              taskCellAddress?: string;
+              lease?: string;
+              generation?: number;
+              ttlMs?: number;
+            }>;
+          };
+          return await this.heartbeatMachine(machineId, request, body);
         }
         if (request.method === "POST" && rest === "/drain") {
           return await this.drainMachine(machineId, request, userId);
+        }
+        const attemptEvents = rest.match(/^\/attempts\/([^/]+)\/events$/);
+        if (request.method === "POST" && attemptEvents) {
+          return await this.proxyMachineAttemptEvents(
+            machineId,
+            decodeURIComponent(attemptEvents[1]),
+            request,
+            await request.json(),
+          );
         }
         if (request.method === "POST" && rest === "/revoke") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
@@ -223,6 +254,20 @@ export class TeamCell {
         if (request.method === "POST" && rest === "/task-assignments") {
           if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
           return this.queueTaskAssignmentRoute(userId, teamId, await request.json());
+        }
+
+        const cancelAssignment = rest.match(/^\/task-assignments\/([^/]+)\/cancel$/);
+        if (request.method === "POST" && cancelAssignment) {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          return this.cancelTaskAssignment(userId, teamId, decodeURIComponent(cancelAssignment[1]));
+        }
+
+        const cancelByTask = rest.match(/^\/task-assignments\/by-task\/([^/]+)\/cancel$/);
+        if (request.method === "POST" && cancelByTask) {
+          if (!requireUserId(userId)) return json({ error: "missing user id" }, 401);
+          this.requireMembership(userId, teamId, "member");
+          const updated = this.requestAssignmentCancel(teamId, decodeURIComponent(cancelByTask[1]));
+          return json({ ok: true, updated, cancelRequested: true });
         }
 
         const conversationMatch = rest.match(/^\/conversations\/([^/]+)$/);
@@ -919,23 +964,49 @@ export class TeamCell {
         );
       });
       if (updated?.machine_id === machineId) {
+        const payload = safeJsonParse(pending.payload_json) as Record<string, unknown>;
         assignments.push({
           assignmentId: pending.id,
           teamId: pending.team_id,
           taskId: pending.task_id,
           attemptId: pending.attempt_id,
           conversationId: pending.conversation_id,
-          payload: safeJsonParse(pending.payload_json),
+          payload: {
+            ...payload,
+            lease: payload.lease ?? null,
+            generation: payload.generation ?? null,
+            taskCellAddress:
+              payload.taskCellAddress ??
+              taskCellName(String(pending.team_id), String(pending.conversation_id)),
+          },
         });
       }
     }
 
     const cancels = this.sql.exec(
-      `SELECT id, task_id, attempt_id, conversation_id
+      `SELECT id, task_id, attempt_id, conversation_id, team_id
        FROM task_assignments
        WHERE machine_id = ? AND cancel_requested = 1 AND status IN ('assigned', 'running')`,
       machineId,
-    ) as Array<{ id: string; task_id: string; attempt_id: string; conversation_id: string }>;
+    ) as Array<{
+      id: string;
+      task_id: string;
+      attempt_id: string;
+      conversation_id: string;
+      team_id: string;
+    }>;
+
+    for (const row of cancels) {
+      const address = taskCellName(String(row.team_id), String(row.conversation_id));
+      void this.env.TASK.get(this.env.TASK.idFromName(address))
+        .fetch(
+          new Request(
+            `https://task.internal/tasks/${encodeURIComponent(row.task_id)}/signal-cancel`,
+            { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+          ),
+        )
+        .catch(() => undefined);
+    }
 
     this.sql.exec("UPDATE machines SET last_seen_at = ? WHERE id = ?", now, machineId);
 
@@ -952,11 +1023,125 @@ export class TeamCell {
     });
   }
 
-  private async heartbeatMachine(machineId: MachineId, request: Request): Promise<Response> {
+  private async heartbeatMachine(
+    machineId: MachineId,
+    request: Request,
+    body: {
+      attempts?: Array<{
+        attemptId?: string;
+        taskCellAddress?: string;
+        lease?: string;
+        generation?: number;
+        ttlMs?: number;
+      }>;
+    } = {},
+  ): Promise<Response> {
     const machine = await this.requireMachineAuth(machineId, request);
     const now = Date.now();
-    this.sql.exec("UPDATE machines SET last_seen_at = ? WHERE id = ?", now, machineId);
-    return json({ ok: true, machineId, status: machine.status, lastSeenAt: now });
+    let status = machine.status;
+    if (status === "stale") {
+      status = "approved";
+      this.sql.exec(
+        "UPDATE machines SET last_seen_at = ?, status = 'approved' WHERE id = ?",
+        now,
+        machineId,
+      );
+    } else {
+      this.sql.exec("UPDATE machines SET last_seen_at = ? WHERE id = ?", now, machineId);
+    }
+
+    const renewals: Array<{ attemptId: string; ok: boolean; error?: string }> = [];
+    for (const attempt of body.attempts ?? []) {
+      const attemptId = String(attempt.attemptId ?? "").trim();
+      const taskCellAddress = String(attempt.taskCellAddress ?? "").trim();
+      const lease = String(attempt.lease ?? "");
+      const generation = Number(attempt.generation);
+      if (!attemptId || !taskCellAddress || !lease || !Number.isFinite(generation)) {
+        renewals.push({ attemptId: attemptId || "unknown", ok: false, error: "invalid" });
+        continue;
+      }
+      try {
+        const response = await this.env.TASK.get(this.env.TASK.idFromName(taskCellAddress)).fetch(
+          new Request(
+            `https://task.internal/attempts/${encodeURIComponent(attemptId)}/lease/renew`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                lease,
+                generation,
+                ttlMs: attempt.ttlMs,
+              }),
+            },
+          ),
+        );
+        if (!response.ok) {
+          const errBody = (await response.json().catch(() => ({}))) as { error?: string };
+          renewals.push({
+            attemptId,
+            ok: false,
+            error: String(errBody.error ?? response.status),
+          });
+        } else {
+          renewals.push({ attemptId, ok: true });
+        }
+      } catch (error) {
+        renewals.push({
+          attemptId,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    await this.armMachineSweepAlarm();
+    return json({
+      ok: true,
+      machineId,
+      status,
+      lastSeenAt: now,
+      renewals,
+    });
+  }
+
+  private async proxyMachineAttemptEvents(
+    machineId: MachineId,
+    attemptId: string,
+    request: Request,
+    body: {
+      lease?: string;
+      generation?: number;
+      taskCellAddress?: string;
+      conversationId?: string;
+      teamId?: string;
+      events?: Array<{ kind?: string; payload?: unknown }>;
+    },
+  ): Promise<Response> {
+    await this.requireMachineAuth(machineId, request);
+    const taskCellAddress =
+      String(body.taskCellAddress ?? "").trim() ||
+      (body.teamId && body.conversationId
+        ? taskCellName(String(body.teamId), String(body.conversationId))
+        : "");
+    if (!taskCellAddress) {
+      throw new HostError("invalid", "taskCellAddress required", 400);
+    }
+    const response = await this.env.TASK.get(this.env.TASK.idFromName(taskCellAddress)).fetch(
+      new Request(`https://task.internal/attempts/${encodeURIComponent(attemptId)}/events`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          lease: body.lease,
+          generation: body.generation,
+          events: body.events ?? [],
+        }),
+      }),
+    );
+    const text = await response.text();
+    return new Response(text, {
+      status: response.status,
+      headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
+    });
   }
 
   private async drainMachine(
@@ -1083,6 +1268,89 @@ export class TeamCell {
       now,
       now,
     );
+    void this.armMachineSweepAlarm();
+  }
+
+  /** Mark cancel_requested so the next poll delivers a cancel to the machine. */
+  requestAssignmentCancel(teamId: TeamId, taskId: TaskId | string): number {
+    const now = Date.now();
+    const before = this.sql.exec(
+      `SELECT id FROM task_assignments
+       WHERE team_id = ? AND task_id = ? AND status IN ('pending', 'assigned', 'running')
+         AND cancel_requested = 0`,
+      teamId,
+      String(taskId),
+    );
+    this.sql.exec(
+      `UPDATE task_assignments
+       SET cancel_requested = 1, updated_at = ?
+       WHERE team_id = ? AND task_id = ? AND status IN ('pending', 'assigned', 'running')`,
+      now,
+      teamId,
+      String(taskId),
+    );
+    return before.length;
+  }
+
+  private cancelTaskAssignment(userId: string, teamId: TeamId, assignmentId: string): Response {
+    this.requireMembership(userId, teamId, "member");
+    const row = this.sql.one<{ id: string; team_id: string; task_id: string }>(
+      "SELECT id, team_id, task_id FROM task_assignments WHERE id = ? AND team_id = ?",
+      assignmentId,
+      teamId,
+    );
+    if (!row) throw new HostError("not_found", "Assignment not found", 404);
+    const now = Date.now();
+    this.sql.exec(
+      `UPDATE task_assignments
+       SET cancel_requested = 1, updated_at = ?
+       WHERE id = ?`,
+      now,
+      assignmentId,
+    );
+    return json({ ok: true, assignmentId, taskId: row.task_id, cancelRequested: true });
+  }
+
+  private applyMachineSweep(now: number): void {
+    const machines = this.sql.exec(
+      `SELECT id, status, last_seen_at FROM machines
+       WHERE status IN ('approved', 'stale')`,
+    ) as Array<{ id: string; status: string; last_seen_at: number | null }>;
+    const stale = decideStaleMachines(machines, now, MACHINE_STALE_AFTER_MS);
+    if (stale.length === 0) return;
+
+    const staleIds = new Set(stale.map((row) => row.machineId));
+    const assignments = this.sql.exec(
+      `SELECT id, machine_id, status FROM task_assignments
+       WHERE status = 'assigned' AND machine_id IS NOT NULL`,
+    ) as Array<{ id: string; machine_id: string | null; status: string }>;
+    const requeues = decideRequeueAssignments(assignments, staleIds);
+
+    this.sql.transaction(() => {
+      for (const decision of stale) {
+        this.sql.exec(
+          `UPDATE machines SET status = 'stale' WHERE id = ? AND status = 'approved'`,
+          decision.machineId,
+        );
+      }
+      for (const decision of requeues) {
+        this.sql.exec(
+          `UPDATE task_assignments
+           SET machine_id = NULL, status = 'pending', updated_at = ?
+           WHERE id = ? AND status = 'assigned'`,
+          now,
+          decision.assignmentId,
+        );
+      }
+    });
+  }
+
+  private async armMachineSweepAlarm(): Promise<void> {
+    const live = this.sql.one<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM machines WHERE status IN ('approved', 'stale', 'draining')`,
+    );
+    if (Number(live?.n ?? 0) === 0) return;
+    await this.ctx.storage.setAlarm(Date.now() + TEAM_SWEEP_ALARM_MS);
   }
 
   private machine(id: MachineId): MachineRow | null {

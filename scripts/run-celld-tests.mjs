@@ -853,6 +853,86 @@ async function main() {
       }
     }
 
+    // Task lease renew + cancel_requested flag.
+    {
+      const boot = await json("/api/teams/bootstrap-personal", {
+        method: "POST",
+        headers: auth(token),
+        body: JSON.stringify({ name: "Lease personal" }),
+      });
+      const teamId = String(boot.body.team?.id ?? "");
+      const conv = await json(`/api/teams/${teamId}/conversations`, {
+        method: "POST",
+        headers: auth(token),
+        body: JSON.stringify({ title: "lease-conv" }),
+      });
+      const conversationId = String(conv.body.conversation?.id ?? conv.body.id ?? "");
+      const taskCreated = await json(`/api/teams/${teamId}/conversations/${conversationId}/tasks`, {
+        method: "POST",
+        headers: auth(token),
+        body: JSON.stringify({
+          teamId,
+          conversationId,
+          title: "lease task",
+          harness: "fixture",
+          prompt: "renew me",
+        }),
+      });
+      const taskId = String(taskCreated.body.task?.id ?? "");
+      const attemptCreated = await json(
+        `/api/teams/${teamId}/conversations/${conversationId}/tasks/${taskId}/attempts`,
+        {
+          method: "POST",
+          headers: auth(token),
+          body: JSON.stringify({ leaseTtlMs: 60_000 }),
+        },
+      );
+      const attemptId = String(attemptCreated.body.attempt?.id ?? "");
+      const lease = String(attemptCreated.body.lease ?? "");
+      const generation = Number(attemptCreated.body.generation ?? 0);
+      const beforeExpiry = Number(attemptCreated.body.leaseExpiresAt ?? 0);
+      const renewed = await json(
+        `/api/teams/${teamId}/conversations/${conversationId}/tasks/attempts/${attemptId}/lease/renew`,
+        {
+          method: "POST",
+          headers: auth(token),
+          body: JSON.stringify({ lease, generation, ttlMs: 120_000 }),
+        },
+      );
+      const afterExpiry = Number(renewed.body.leaseExpiresAt ?? 0);
+      const queued = await json(`/api/teams/${teamId}/task-assignments`, {
+        method: "POST",
+        headers: auth(token),
+        body: JSON.stringify({
+          taskId,
+          attemptId,
+          conversationId,
+          payload: {
+            lease,
+            generation,
+            taskCellAddress: `team:${teamId}:conv:${conversationId}:tasks`,
+          },
+        }),
+      });
+      const cancelled = await json(
+        `/api/teams/${teamId}/task-assignments/by-task/${taskId}/cancel`,
+        {
+          method: "POST",
+          headers: auth(token),
+          body: "{}",
+        },
+      );
+      log(
+        "task-lease-renew-cancel",
+        renewed.response.ok &&
+          afterExpiry > beforeExpiry &&
+          queued.response.ok &&
+          cancelled.response.ok &&
+          Number(cancelled.body.updated ?? 0) >= 1,
+        `renew=${renewed.response.status} delta=${afterExpiry - beforeExpiry} cancelUpdated=${cancelled.body.updated}`,
+      );
+    }
+
     log("live-provider-smoke", false, "UNRUN: pass --live-smoke with credentials");
 
     void escalate;

@@ -51,15 +51,54 @@ export class CelldClient {
     }>;
   }
 
-  async heartbeat() {
+  async heartbeat(
+    body: {
+      attempts?: Array<{
+        attemptId: string;
+        taskCellAddress: string;
+        lease: string;
+        generation: number;
+        ttlMs?: number;
+      }>;
+    } = {},
+  ) {
     const res = await fetch(
       `${this.creds.baseUrl}/api/machines/${this.creds.machineId}/heartbeat`,
       {
         method: "POST",
         headers: this.headers(),
+        body: JSON.stringify(body),
       },
     );
     if (!res.ok) throw new Error(`heartbeat failed: ${res.status}`);
+    return res.json();
+  }
+
+  async postAttemptEvents(input: {
+    attemptId: string;
+    lease: string;
+    generation: number;
+    taskCellAddress: string;
+    teamId: string;
+    conversationId: string;
+    events: Array<{ kind: string; payload?: unknown }>;
+  }) {
+    const res = await fetch(
+      `${this.creds.baseUrl}/api/machines/${this.creds.machineId}/attempts/${encodeURIComponent(input.attemptId)}/events`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          lease: input.lease,
+          generation: input.generation,
+          taskCellAddress: input.taskCellAddress,
+          teamId: input.teamId,
+          conversationId: input.conversationId,
+          events: input.events,
+        }),
+      },
+    );
+    if (!res.ok) throw new Error(`attempt events failed: ${res.status} ${await res.text()}`);
     return res.json();
   }
 

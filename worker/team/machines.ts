@@ -1,6 +1,6 @@
 import { HostError } from "../../shared/errors";
 
-export type MachineStatus = "pending" | "approved" | "draining" | "revoked";
+export type MachineStatus = "pending" | "approved" | "draining" | "revoked" | "stale";
 
 export type MachineRow = {
   id: string;
