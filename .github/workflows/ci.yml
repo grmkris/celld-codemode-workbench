@@ -114,8 +114,10 @@ jobs:
           node services/streams.mjs &
           echo $! > streams.pid
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4437/health >/dev/null 2>&1 || curl -fsS http://127.0.0.1:4437 >/dev/null 2>&1; then
-              echo "streams healthy"
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 1 http://127.0.0.1:4437/ || echo 000)
+            # DurableStreamTestServer answers 404 on unknown paths; any HTTP response means up.
+            if [ "$code" != "000" ]; then
+              echo "streams healthy (http $code)"
               exit 0
             fi
             sleep 1
