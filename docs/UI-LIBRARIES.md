@@ -108,13 +108,15 @@ Prompt wiring: [`ui/src/components/prompt-form.tsx`](../ui/src/components/prompt
 
 ## TanStack AI (not a chat widget)
 
-| Package                                                                      | Where it runs                                                               |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `@tanstack/ai`, `ai-code-mode`, `ai-openai`, `ai-grok`, `ai-isolate-quickjs` | Worker / host — `chat()`, Code Mode, QuickJS                                |
-| `@tanstack/ai-client`, `@tanstack/ai-react`                                  | DEV only: `?preview=1` → [`ChatPreview`](../ui/src/preview/ChatPreview.tsx) |
+| Package                                                                      | Where it runs                                                   |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `@tanstack/ai`, `ai-code-mode`, `ai-openai`, `ai-grok`, `ai-isolate-quickjs` | Worker / host — `chat()`, Code Mode, QuickJS                    |
+| `@tanstack/ai-client`, `@tanstack/ai-react`                                  | Workbench `useChat` + DEV `?preview=1` ChatPreview              |
+| `@durable-streams/tanstack-ai-transport`                                     | `durableStreamConnection` read path; Celld `/commands` for send |
 
-Production workbench transport is custom REST + long-poll events via
-`useWorkbench`, not `useChat`.
+Production workbench transport is `useChat` + Durable Streams (`useAgentChat`),
+with SQLite `/snapshot` as the hydrate seed. Panels still use `useWorkbench`
+REST for approvals, memory, and stop.
 
 ## Related docs
 

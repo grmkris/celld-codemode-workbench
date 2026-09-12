@@ -41,11 +41,9 @@ export interface OutboxPublisherOptions {
   fetch?: typeof fetch;
 }
 
-interface StreamEnvelope {
-  eventId: string;
-  kind: string;
-  payload: unknown;
-  fingerprint: string;
+/** Fingerprint for reconciliation — hash of the published JSON body only. */
+export async function fingerprintPayload(payload: unknown): Promise<string> {
+  return sha256Hex(stableJson(payload));
 }
 
 function isNetworkError(error: unknown): boolean {
@@ -75,8 +73,11 @@ export class OutboxPublisher {
 
   async enqueue(kind: string, payload: unknown): Promise<string> {
     const eventId = EventId.generate();
+    // Stream readers (durableStreamConnection / materializeSnapshot) expect
+    // raw TanStack chunks with a top-level `type`. Keep reconciliation metadata
+    // on the outbox row only — never wrap the published body.
     const payloadJson = stableJson(payload);
-    const fingerprint = await sha256Hex(`${kind}:${payloadJson}`);
+    const fingerprint = await fingerprintPayload(payload);
     const now = Date.now();
 
     this.sql.exec(
@@ -117,7 +118,13 @@ export class OutboxPublisher {
           }
           await producer.flush();
 
-          const offset = producer.lastSuccessfulOffset ?? state.last_acked_offset ?? null;
+          const offset = producer.lastSuccessfulOffset ?? null;
+          // IdempotentProducer.flush() can resolve after a swallowed batch error
+          // (e.g. invalid JSON → 400) without advancing lastSuccessfulOffset.
+          // Never ack in that case or we permanently drop undelivered rows.
+          if (!offset) {
+            throw new Error("streams producer flush completed without an offset");
+          }
           this.markAcked(remaining, offset);
           this.savePublisherState({
             ...state,
@@ -175,13 +182,8 @@ export class OutboxPublisher {
   }
 
   private encodeEnvelope(row: OutboxRow): string {
-    const envelope: StreamEnvelope = {
-      eventId: row.event_id,
-      kind: row.kind,
-      payload: JSON.parse(row.payload) as unknown,
-      fingerprint: row.fingerprint,
-    };
-    return JSON.stringify(envelope);
+    // Publish the payload as-is (already stable-JSON serialized).
+    return row.payload;
   }
 
   private async connectOrCreate(
@@ -191,18 +193,17 @@ export class OutboxPublisher {
     const connectOpts = {
       url: streamUrl,
       headers: authHeaders,
+      contentType: "application/json" as const,
       fetch: this.fetchImpl,
     };
 
     const head = await DurableStream.head(connectOpts);
     if (head.exists) {
+      // Always pass contentType — connect() does not infer it from HEAD alone.
       return DurableStream.connect(connectOpts);
     }
 
-    const created = new DurableStream({
-      ...connectOpts,
-      contentType: "application/json",
-    });
+    const created = new DurableStream(connectOpts);
     await created.create({ contentType: "application/json" });
     return created;
   }
@@ -301,7 +302,7 @@ export class OutboxPublisher {
     const state = this.loadPublisherState();
 
     try {
-      const response = await stream<StreamEnvelope>({
+      const response = await stream<unknown>({
         url: streamUrl,
         headers: authHeaders,
         offset: state.last_acked_offset ?? "0",
@@ -311,7 +312,7 @@ export class OutboxPublisher {
 
       const items = await response.json();
       for (const item of items) {
-        if (item.fingerprint) fingerprints.add(item.fingerprint);
+        fingerprints.add(await fingerprintPayload(item));
       }
     } catch {
       try {

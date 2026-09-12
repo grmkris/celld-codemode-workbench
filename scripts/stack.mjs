@@ -91,6 +91,7 @@ const project = prepareIsolateRoot(root, isolateRoot);
 const env = {
   ...process.env,
   STREAMS_BASE_URL: process.env.STREAMS_BASE_URL ?? streamsUrl,
+  CELLD_VAR_STREAMS_BASE_URL: process.env.STREAMS_BASE_URL ?? streamsUrl,
   PATH: `${join(root, "node_modules/.bin")}:${process.env.HOME}/.local/bin:${process.env.PATH}`,
   CELLD_VAR_MODEL_PROVIDER: process.env.MODEL_PROVIDER ?? "fixture",
 };

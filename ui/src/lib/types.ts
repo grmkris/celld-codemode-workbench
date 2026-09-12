@@ -5,11 +5,28 @@ export interface SnapshotMessage {
   seq: number;
 }
 
+export interface SnapshotMessagePart {
+  id: string;
+  message_id: string;
+  kind: string;
+  step: number;
+  seq: number;
+  payload: string;
+  created_at: number;
+}
+
+export interface EventRow {
+  id: number;
+  type: string;
+  payload: string;
+}
+
 export interface Snapshot {
   agent: Record<string, unknown> | null;
   archived?: boolean;
   run: Record<string, unknown> | null;
   messages: SnapshotMessage[];
+  messageParts?: SnapshotMessagePart[];
   memory: Array<{ key: string; value: string }>;
   tasks: Array<{ id: string; title: string; status: string }>;
   snippets: Array<{
@@ -26,12 +43,10 @@ export interface Snapshot {
   approvals: Array<{ id: string; capability: string; args_json: string; status: string }>;
   notifications: Array<{ id: string; message: string }>;
   latestEventId: number;
-}
-
-export interface EventRow {
-  id: number;
-  type: string;
-  payload: string;
+  /** Last acked Durable Streams offset for the chat publisher. */
+  streamOffset?: string | null;
+  /** Recent journal events (replaces long-poll /events for inspect). */
+  events?: EventRow[];
 }
 
 export interface ChatSummary {

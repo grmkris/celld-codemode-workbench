@@ -52,5 +52,6 @@
     "OPENAI_MODEL": "gpt-4.1-mini",
     "XAI_MODEL": "grok-4-1-fast-non-reasoning",
     "ALLOW_TEST_HOOKS": "0",
+    "STREAMS_BASE_URL": "http://127.0.0.1:4437",
   },
 }

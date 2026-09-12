@@ -1,8 +1,8 @@
 # Commands
 
 Server-owned mutations go through `POST /api/agents/:id/commands` (or the
-conversation equivalent). Reads (`GET /snapshot`, `GET /stream`, `GET /events`)
-never start runs.
+conversation equivalent). Reads (`GET /snapshot`, `GET /stream`) never start
+runs.
 
 ## Envelope
 
@@ -64,7 +64,7 @@ Stop sets `queue_paused`; queued messages do not advance until `resume_queue`.
 Send returns `202` with `{ queued: true|false, runId?, messageId }`. The HTTP
 response is an ack; execution continues via `waitUntil`.
 
-## Legacy endpoints
+## Compatibility
 
-`POST /chat` and `POST /stop` remain for compatibility. Prefer `/commands` for
-dedup and fencing.
+`POST /stop` remains as a convenience alias for `kind: "stop"`. All sends go
+through `/commands`.

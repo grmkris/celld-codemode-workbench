@@ -1,9 +1,11 @@
 import { useChat } from "@tanstack/ai-react";
-import type { ConnectionStatus } from "@tanstack/ai-client";
+import type { ConnectionStatus, UIMessage } from "@tanstack/ai-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { acquireConnection, releaseConnection } from "@/lib/connection-registry";
+import { acquireConnection, connectionKey, releaseConnection } from "@/lib/connection-registry";
 import { clearDraft, readDraft, writeDraft } from "@/lib/drafts";
 import { createDurableAgentConnection } from "@/lib/durable-connection";
+import { snapshotToUIMessages } from "@/lib/transcript";
+import type { SnapshotMessage } from "@/lib/types";
 
 const idleConnection = {
   async *subscribe() {
@@ -14,33 +16,51 @@ const idleConnection = {
   },
 };
 
+export type AgentChatSnapshotSeed = {
+  messages?: SnapshotMessage[];
+  streamOffset?: string | null;
+};
+
 export function useAgentChat(
   agentId: string,
   token: string,
   conversationKey: string,
-  options?: { live?: boolean },
+  options?: { snapshot?: AgentChatSnapshotSeed | null },
 ) {
-  const live = options?.live ?? true;
+  const streamOffset = options?.snapshot?.streamOffset ?? null;
+  const initialMessages = useMemo(
+    () => snapshotToUIMessages(options?.snapshot?.messages ?? []),
+    // Remount when the agent or seed offset changes; message content updates
+    // arrive via the live stream after attach.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agentId, streamOffset],
+  );
+
+  const poolKey = connectionKey(agentId, token, streamOffset);
   const connection = useMemo(() => {
     if (!agentId || !token) return idleConnection;
-    return acquireConnection(conversationKey, () =>
-      createDurableAgentConnection({ agentId, token }),
+    return acquireConnection(poolKey, () =>
+      createDurableAgentConnection({
+        agentId,
+        token,
+        initialOffset: streamOffset,
+      }),
     );
-  }, [agentId, token, conversationKey]);
+  }, [agentId, token, poolKey, streamOffset]);
 
   useEffect(() => {
     if (!agentId || !token) return undefined;
     return () => {
-      releaseConnection(conversationKey);
+      releaseConnection(poolKey);
     };
-  }, [agentId, token, conversationKey]);
+  }, [agentId, token, poolKey]);
 
   const { messages, sendMessage, status, connectionStatus, isLoading, error, stop } = useChat({
     threadId: conversationKey,
     connection,
-    // Snapshot/long-poll remains authoritative when streams are down.
-    live: live && Boolean(agentId && token),
-  } as unknown as Parameters<typeof useChat>[0]);
+    live: Boolean(agentId && token),
+    initialMessages: initialMessages as UIMessage[],
+  });
 
   const draftRef = useRef(readDraft(conversationKey));
   const [draft, setDraftState] = useState(() => readDraft(conversationKey));

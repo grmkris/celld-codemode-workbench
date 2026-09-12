@@ -3,34 +3,43 @@ import type { DurableStreamConnection } from "@durable-streams/tanstack-ai-trans
 const refCounts = new Map<string, number>();
 const connections = new Map<string, DurableStreamConnection>();
 
+/** Connection identity: agent + credentials + resume offset. */
+export function connectionKey(
+  agentId: string,
+  token: string,
+  initialOffset?: string | null,
+): string {
+  return `${agentId}|${token}|${initialOffset ?? ""}`;
+}
+
 /**
- * Ref-counted connection pool keyed by conversation id. Strict Mode safe:
- * paired acquire/release in effect cleanups prevent double-free.
+ * Ref-counted connection pool. Strict Mode safe: paired acquire/release in
+ * effect cleanups prevent double-free.
  */
 export function acquireConnection(
-  conversationKey: string,
+  key: string,
   factory: () => DurableStreamConnection,
 ): DurableStreamConnection {
-  const next = (refCounts.get(conversationKey) ?? 0) + 1;
-  refCounts.set(conversationKey, next);
-  let connection = connections.get(conversationKey);
+  const next = (refCounts.get(key) ?? 0) + 1;
+  refCounts.set(key, next);
+  let connection = connections.get(key);
   if (!connection) {
     connection = factory();
-    connections.set(conversationKey, connection);
+    connections.set(key, connection);
   }
   return connection;
 }
 
-export function releaseConnection(conversationKey: string): void {
-  const current = refCounts.get(conversationKey) ?? 0;
+export function releaseConnection(key: string): void {
+  const current = refCounts.get(key) ?? 0;
   if (current <= 1) {
-    refCounts.delete(conversationKey);
-    connections.delete(conversationKey);
+    refCounts.delete(key);
+    connections.delete(key);
     return;
   }
-  refCounts.set(conversationKey, current - 1);
+  refCounts.set(key, current - 1);
 }
 
-export function connectionRefCount(conversationKey: string): number {
-  return refCounts.get(conversationKey) ?? 0;
+export function connectionRefCount(key: string): number {
+  return refCounts.get(key) ?? 0;
 }

@@ -23,6 +23,9 @@ describe("operation identity", () => {
   it("stable-json distinguishes key order from value changes", () => {
     expect(stableJson({ b: 1, a: 2 })).toBe(stableJson({ a: 2, b: 1 }));
     expect(stableJson({ a: 2 })).not.toBe(stableJson({ a: 3 }));
+    expect(stableJson({ a: 1, b: undefined })).toBe('{"a":1}');
+    expect(stableJson([1, undefined, 2])).toBe("[1,null,2]");
+    expect(() => JSON.parse(stableJson({ type: "RUN_ERROR", error: undefined }))).not.toThrow();
   });
 });
 

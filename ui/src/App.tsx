@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { InvitePage } from "@/components/auth/invite-page";
 import { EmailAuthForm } from "@/components/auth/email-auth-form";
 import { ArtifactReviewStub } from "@/components/artifact-review-stub";
@@ -21,8 +21,7 @@ import { resolveAgentId } from "@/lib/agent-id";
 import { detectAuthMode, type AuthMode } from "@/lib/auth-client";
 import { api } from "@/lib/api";
 import type { AppRoute } from "@/lib/router";
-import type { ChatSummary, EventRow, HealthInfo, Panel } from "@/lib/types";
-import { mergeTranscript } from "@/lib/transcript";
+import type { ChatSummary, HealthInfo, Panel } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const ChatPreview = lazy(() =>
@@ -254,7 +253,22 @@ function TeamWorkbench({
   const agentId = activeConversation ? resolveAgentId(activeConversation) : conversationId;
 
   const workbench = useWorkbench(agentId, token);
-  const chat = useAgentChat(agentId, token, conversationId);
+  const chat = useAgentChat(agentId, token, conversationId, {
+    snapshot: workbench.snapshot,
+  });
+  const prevChatStatus = useRef(chat.status);
+
+  useEffect(() => {
+    const prev = prevChatStatus.current;
+    prevChatStatus.current = chat.status;
+    if (
+      (prev === "streaming" || prev === "submitted") &&
+      chat.status !== "streaming" &&
+      chat.status !== "submitted"
+    ) {
+      void workbench.refresh().catch(() => undefined);
+    }
+  }, [chat.status, workbench.refresh]);
 
   useEffect(() => {
     if (!token) return;
@@ -347,7 +361,7 @@ function TeamWorkbench({
       onStop={() => void workbench.stop()}
       chat={
         <ChatTranscript
-          messages={mergeTranscript(chat.messages, workbench.snapshot?.messages ?? [])}
+          messages={chat.messages}
           approvals={snapshotApprovals}
           isBusy={chat.isLoading}
           runError={String(workbench.snapshot?.run?.error ?? "")}
@@ -362,6 +376,7 @@ function TeamWorkbench({
           busy={busy || chat.isLoading}
           live={workbench.live}
           provider={workbench.provider}
+          deliveryDelayed={String(chat.connectionStatus) === "error"}
           onChange={chat.setDraft}
           onSend={() => {
             void chat.sendDraft().then((ok) => {
@@ -419,10 +434,22 @@ function LegacyWorkbench({
   const [busy, setBusy] = useState(false);
 
   const workbench = useWorkbench(agentId, token);
-  // Prefer snapshot/long-poll for the fixture workbench path; streams are optional.
-  const chat = useAgentChat(agentId, token, agentId || "pending", { live: false });
-  const cursorRef = useRef(workbench.cursor);
-  cursorRef.current = workbench.cursor;
+  const chat = useAgentChat(agentId, token, agentId || "pending", {
+    snapshot: workbench.snapshot,
+  });
+  const prevChatStatus = useRef(chat.status);
+
+  useEffect(() => {
+    const prev = prevChatStatus.current;
+    prevChatStatus.current = chat.status;
+    if (
+      (prev === "streaming" || prev === "submitted") &&
+      chat.status !== "streaming" &&
+      chat.status !== "submitted"
+    ) {
+      void workbench.refresh().catch(() => undefined);
+    }
+  }, [chat.status, workbench.refresh]);
 
   const selectChat = useCallback(
     (id: string) => {
@@ -485,45 +512,6 @@ function LegacyWorkbench({
     selectChat,
     navigate,
   ]);
-
-  useEffect(() => {
-    if (!token || !agentId || !workbench.base) return undefined;
-    const cancelled = { current: false };
-    const loop = async () => {
-      while (!cancelled.current) {
-        try {
-          const data = await api<{ events: EventRow[]; latestEventId: number }>(
-            `${workbench.base}/events?after=${cursorRef.current}&wait=1`,
-            { token },
-          );
-          if (cancelled.current) return;
-          if (data.events.length) {
-            workbench.setEvents((current) => {
-              const seen = new Set(current.map((row) => row.id));
-              const next = [...current];
-              for (const row of data.events) {
-                if (seen.has(row.id)) continue;
-                seen.add(row.id);
-                next.push(row);
-              }
-              return next.slice(-80);
-            });
-            workbench.setCursor(data.latestEventId);
-            await workbench.refresh();
-            await refreshChats().catch(() => undefined);
-          }
-          workbench.setConnected(true);
-        } catch {
-          if (!cancelled.current) workbench.setConnected(false);
-          await new Promise((resolve) => window.setTimeout(resolve, 1500));
-        }
-      }
-    };
-    void loop();
-    return () => {
-      cancelled.current = true;
-    };
-  }, [token, agentId, workbench.base, workbench, refreshChats]);
 
   useEffect(() => {
     if (!token) return undefined;
@@ -589,11 +577,11 @@ function LegacyWorkbench({
       onStop={() => void workbench.stop()}
       chat={
         <ChatTranscript
-          messages={mergeTranscript(chat.messages, workbench.snapshot?.messages ?? [])}
+          messages={chat.messages}
           approvals={workbench.snapshot?.approvals ?? []}
           isBusy={busy || workbench.busy || chat.isLoading}
           runError={String(workbench.snapshot?.run?.error ?? "")}
-          error={workbench.error}
+          error={chat.error?.message ?? workbench.error}
           onPickSuggestion={chat.setDraft}
           onDecide={(id, decision) => void workbench.decideApproval(id, decision)}
         />
@@ -604,14 +592,11 @@ function LegacyWorkbench({
           busy={busy || workbench.busy || chat.isLoading}
           live={workbench.live}
           provider={workbench.provider}
+          deliveryDelayed={String(chat.connectionStatus) === "error"}
           onChange={chat.setDraft}
           onSend={() => {
-            const text = chat.draft.trim();
-            if (!text) return;
-            chat.setDraft("");
-            void workbench.send(text).then((ok) => {
-              if (!ok) chat.setDraft(text);
-              else void refreshChats().catch(() => undefined);
+            void chat.sendDraft().then((ok) => {
+              if (ok) void refreshChats().catch(() => undefined);
             });
           }}
         />

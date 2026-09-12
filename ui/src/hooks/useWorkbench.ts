@@ -12,10 +12,17 @@ export function readInitialChatId(): string {
   return localStorage.getItem(CHAT_STORAGE_KEY) ?? "";
 }
 
+function partsToEvents(snapshot: Snapshot | null): EventRow[] {
+  const parts = snapshot?.messageParts ?? [];
+  return parts.map((part, index) => ({
+    id: index + 1,
+    type: String(part.kind),
+    payload: typeof part.payload === "string" ? part.payload : JSON.stringify(part.payload ?? {}),
+  }));
+}
+
 export function useWorkbench(agentId: string, token: string) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [events, setEvents] = useState<EventRow[]>([]);
-  const [cursor, setCursor] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
@@ -30,8 +37,6 @@ export function useWorkbench(agentId: string, token: string) {
 
   const resetChatState = useCallback(() => {
     setSnapshot(null);
-    setEvents([]);
-    setCursor(0);
     setError(null);
   }, []);
 
@@ -44,7 +49,6 @@ export function useWorkbench(agentId: string, token: string) {
     if (!agentId || !base) return;
     const data = await api<Snapshot>(`${base}/snapshot`, { token });
     setSnapshot(data);
-    setCursor(data.latestEventId);
     setConnected(true);
     setError(null);
   }, [agentId, base, token]);
@@ -94,7 +98,6 @@ export function useWorkbench(agentId: string, token: string) {
         const data = await api<Snapshot>(`${base}/snapshot`, { token });
         if (cancelled) return;
         setSnapshot(data);
-        setCursor(data.latestEventId);
         setConnected(true);
         setError(null);
       } catch (err: unknown) {
@@ -117,6 +120,11 @@ export function useWorkbench(agentId: string, token: string) {
     return map;
   }, [snapshot]);
 
+  const events = useMemo(() => {
+    if (snapshot?.events?.length) return snapshot.events;
+    return partsToEvents(snapshot);
+  }, [snapshot]);
+
   const executions = useMemo(
     () =>
       events.filter((row) =>
@@ -134,29 +142,6 @@ export function useWorkbench(agentId: string, token: string) {
   const doneTasks = useMemo(
     () => (snapshot?.tasks ?? []).filter((item) => item.status === "done"),
     [snapshot],
-  );
-
-  const send = useCallback(
-    async (text: string) => {
-      if (!agentId || !base) {
-        setError("No chat selected");
-        return false;
-      }
-      setError(null);
-      setBusy(true);
-      try {
-        await api(`${base}/chat`, { method: "POST", token, body: JSON.stringify({ text }) });
-        await refresh();
-        await refreshChats().catch(() => undefined);
-        return true;
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : String(err));
-        return false;
-      } finally {
-        setBusy(false);
-      }
-    },
-    [agentId, base, token, refresh, refreshChats],
   );
 
   const stop = useCallback(async () => {
@@ -203,9 +188,6 @@ export function useWorkbench(agentId: string, token: string) {
   return {
     snapshot,
     events,
-    setEvents,
-    cursor,
-    setCursor,
     error,
     setError,
     connected,
@@ -226,7 +208,6 @@ export function useWorkbench(agentId: string, token: string) {
     refresh,
     refreshChats,
     resetChatState,
-    send,
     stop,
     clearWorkspace,
     decideApproval,

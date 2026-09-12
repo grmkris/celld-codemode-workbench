@@ -78,6 +78,23 @@ async function json(path, init = {}) {
   return { response, body };
 }
 
+function wireId() {
+  return crypto.randomUUID();
+}
+
+/** Prefer /commands (kind send) — the sole write path for chat turns. */
+async function sendCommand(token, agentId, text) {
+  return json(`/api/agents/${agentId}/commands`, {
+    method: "POST",
+    headers: auth(token),
+    body: JSON.stringify({
+      commandId: wireId(),
+      kind: "send",
+      payload: { text, messageId: wireId() },
+    }),
+  });
+}
+
 function portInUse(listenPort) {
   return new Promise((resolve) => {
     const socket = createConnection({ host: "127.0.0.1", port: listenPort });
@@ -98,6 +115,41 @@ async function waitPortFree(listenPort, timeoutMs = 8_000) {
   throw new Error(`port ${listenPort} is still in use by the previous test node`);
 }
 
+function spawnStreams() {
+  const streamsPort = Number(process.env.STREAMS_PORT ?? 4437);
+  const dataDir = process.env.STREAMS_DATA_DIR ?? join(isolateRoot, "streams-data");
+  mkdirSync(dataDir, { recursive: true });
+  const child = spawn("node", [join(root, "services/streams.mjs")], {
+    cwd: root,
+    env: {
+      ...process.env,
+      STREAMS_PORT: String(streamsPort),
+      STREAMS_DATA_DIR: dataDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.on("data", (chunk) => process.stdout.write(chunk));
+  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+  return child;
+}
+
+async function waitStreams(timeoutMs = 15_000) {
+  const streamsPort = Number(process.env.STREAMS_PORT ?? 4437);
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${streamsPort}/`, {
+        signal: AbortSignal.timeout(500),
+      });
+      if (response.status !== 0) return;
+    } catch {
+      // retry
+    }
+    await wait(200);
+  }
+  throw new Error(`streams sidecar did not start on ${streamsPort}`);
+}
+
 function spawnCelld() {
   prepareIsolateRoot(root, isolateRoot);
   console.log(`celld isolate ${isolateRoot}`);
@@ -113,6 +165,7 @@ function spawnCelld() {
       : "fixture",
     CELLD_VAR_ALIBABA_MODEL: process.env.ALIBABA_MODEL ?? "qwen3.8-max",
     CELLD_VAR_ALLOW_TEST_HOOKS: "1",
+    CELLD_VAR_STREAMS_BASE_URL: process.env.STREAMS_BASE_URL ?? "http://127.0.0.1:4437",
     CELLD_SHUTDOWN_TOTAL_MS: process.env.CELLD_SHUTDOWN_TOTAL_MS ?? "12000",
     CELLD_SHUTDOWN_DRAIN_MS: process.env.CELLD_SHUTDOWN_DRAIN_MS ?? "4000",
     CELLD_DRAIN_TOKEN_WAIT_MS: process.env.CELLD_DRAIN_TOKEN_WAIT_MS ?? "0",
@@ -259,6 +312,12 @@ async function main() {
     ui.on("exit", (code) => (code === 0 ? resolve() : reject(new Error("ui build failed"))));
   });
 
+  let streams = null;
+  const streamsPort = Number(process.env.STREAMS_PORT ?? 4437);
+  if (!(await portInUse(streamsPort))) {
+    streams = spawnStreams();
+    await waitStreams();
+  }
   let celld = spawnCelld();
   const watchdog = setTimeout(() => {
     celld.kill("SIGKILL");
@@ -338,24 +397,21 @@ async function main() {
       }
       const liveAgent = `live${Date.now().toString(36)}`;
       await ensureChat(token, liveAgent, "live-smoke");
-      const liveChat = await json(`/api/agents/${liveAgent}/chat`, {
-        method: "POST",
-        headers: auth(token),
-        body: JSON.stringify({
-          text: "Use execute_typescript to call external_memory_set with key alibaba_ok and value token-plan. Then stop.",
-        }),
-      });
+      const liveChat = await sendCommand(
+        token,
+        liveAgent,
+        "Use execute_typescript to call external_memory_set with key alibaba_ok and value token-plan. Then stop.",
+      );
       if (!liveChat.response.ok && liveChat.response.status !== 202) {
         log(
           "live-provider-smoke",
           false,
-          `chat ${liveChat.response.status} ${liveChat.body.error ?? ""}`,
+          `commands ${liveChat.response.status} ${liveChat.body.error ?? ""}`,
         );
         return;
       }
       const liveSnap = await waitRunIdle(token, 60_000, liveAgent);
-      const events = await json(`/api/agents/${liveAgent}/events`, { headers: auth(token) });
-      const started = (events.body.events ?? []).find((row) => row.type === "run.started");
+      const started = (liveSnap.events ?? []).find((row) => row.type === "run.started");
       let payload = {};
       try {
         payload =
@@ -371,18 +427,13 @@ async function main() {
       const adapter = String(payload.adapter ?? "");
       const completed = liveSnap.run?.status === "completed";
       const live = adapter === "alibaba" && stored && completed;
-      await json(`/api/agents/${liveAgent}/chat`, {
-        method: "POST",
-        headers: auth(token),
-        body: JSON.stringify({
-          text: "Use execute_typescript to read external_memory_get for key alibaba_ok and return that value.",
-        }),
-      });
-      const inspectSnap = await waitRunIdle(token, 60_000, liveAgent);
-      const inspectEvents = await json(`/api/agents/${liveAgent}/events`, { headers: auth(token) });
-      const inspectStarted = (inspectEvents.body.events ?? []).filter(
-        (row) => row.type === "run.started",
+      await sendCommand(
+        token,
+        liveAgent,
+        "Use execute_typescript to read external_memory_get for key alibaba_ok and return that value.",
       );
+      const inspectSnap = await waitRunIdle(token, 60_000, liveAgent);
+      const inspectStarted = (inspectSnap.events ?? []).filter((row) => row.type === "run.started");
       const secondLive = inspectStarted.length >= 2 && inspectSnap.run?.status === "completed";
       log(
         "live-provider-smoke",
@@ -392,11 +443,7 @@ async function main() {
       return;
     }
 
-    const malformed = await json("/api/agents/Nope/chat", {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({ text: "hi" }),
-    });
+    const malformed = await sendCommand(token, "Nope", "hi");
     log("malformed-agent", malformed.response.status >= 400, `status ${malformed.response.status}`);
 
     const unknown = await json(`/api/agents/missingchat/snapshot`, { headers: auth(token) });
@@ -404,11 +451,7 @@ async function main() {
 
     await ensureChat(token, agent, "e2e-main");
 
-    const oversized = await json(`/api/agents/${agent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({ text: "x".repeat(20_000) }),
-    });
+    const oversized = await sendCommand(token, agent, "x".repeat(20_000));
     log(
       "oversized-message",
       oversized.response.status >= 400,
@@ -420,16 +463,8 @@ async function main() {
     await ensureChat(token, chatA, "parallel-a");
     await ensureChat(token, chatB, "parallel-b");
     const [parA, parB] = await Promise.all([
-      json(`/api/agents/${chatA}/chat`, {
-        method: "POST",
-        headers: auth(token),
-        body: JSON.stringify({ text: "Inspect current state." }),
-      }),
-      json(`/api/agents/${chatB}/chat`, {
-        method: "POST",
-        headers: auth(token),
-        body: JSON.stringify({ text: "Inspect current state." }),
-      }),
+      sendCommand(token, chatA, "Inspect current state."),
+      sendCommand(token, chatB, "Inspect current state."),
     ]);
     await Promise.all([waitRunIdle(token, 25_000, chatA), waitRunIdle(token, 25_000, chatB)]);
     const listed = await json("/api/chats", { headers: auth(token) });
@@ -459,11 +494,7 @@ async function main() {
       method: "POST",
       headers: auth(token),
     });
-    const afterArchive = await json(`/api/agents/${archiveTarget}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({ text: "should fail" }),
-    });
+    const afterArchive = await sendCommand(token, archiveTarget, "should fail");
     const listAfter = await json("/api/chats", { headers: auth(token) });
     const stillListed = (listAfter.body.chats ?? []).some((row) => row.id === archiveTarget);
     log(
@@ -472,13 +503,11 @@ async function main() {
       `archive=${archived.response.status} chat=${afterArchive.response.status} listed=${stillListed}`,
     );
 
-    await json(`/api/agents/${agent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({
-        text: "Remember that this project's priority is reliability. Create three maintenance tasks.",
-      }),
-    });
+    await sendCommand(
+      token,
+      agent,
+      "Remember that this project's priority is reliability. Create three maintenance tasks.",
+    );
     let snap = await waitRunIdle(token);
     const remembered = (snap.memory ?? []).some(
       (row) => row.key === "project_priority" && String(row.value).includes("reliability"),
@@ -497,13 +526,11 @@ async function main() {
       `events=${reconnect.latestEventId}`,
     );
 
-    await json(`/api/agents/${agent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({
-        text: "Write and test a reusable program that lists unfinished tasks and saves a maintenance summary. Activate it for later use.",
-      }),
-    });
+    await sendCommand(
+      token,
+      agent,
+      "Write and test a reusable program that lists unfinished tasks and saves a maintenance summary. Activate it for later use.",
+    );
     snap = await waitRunIdle(token);
     const snippet = (snap.snippets ?? []).find((row) => row.name === "maintenance_summary");
     const tested = snippet?.test_results && JSON.parse(snippet.test_results).passed;
@@ -565,13 +592,7 @@ async function main() {
       log("schedule-pause", false, "could not create pause schedule");
     }
 
-    await json(`/api/agents/${agent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({
-        text: "Deliver the maintenance summary to the demo integration.",
-      }),
-    });
+    await sendCommand(token, agent, "Deliver the maintenance summary to the demo integration.");
     snap = await waitRunIdle(token);
     const firstApproval = snap.approvals?.[0];
     const notesBefore = snap.notifications?.length ?? 0;
@@ -595,13 +616,7 @@ async function main() {
       `notes=${snap.notifications?.length}`,
     );
 
-    await json(`/api/agents/${agent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({
-        text: "Deliver the maintenance summary to the demo integration.",
-      }),
-    });
+    await sendCommand(token, agent, "Deliver the maintenance summary to the demo integration.");
     snap = await waitRunIdle(token);
     const second = snap.approvals?.[0];
     if (second) {
@@ -632,13 +647,11 @@ async function main() {
       log("demo-5-approve-once", false, "no second approval");
     }
 
-    await json(`/api/agents/${agent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({
-        text: "Revise the snippet, demonstrate a failed test, activate a valid revision, and roll back.",
-      }),
-    });
+    await sendCommand(
+      token,
+      agent,
+      "Revise the snippet, demonstrate a failed test, activate a valid revision, and roll back.",
+    );
     snap = await waitRunIdle(token);
     const versions = (snap.snippets ?? []).filter((row) => row.name === "maintenance_summary");
     const failedKept = versions.some((row) => {
@@ -658,11 +671,7 @@ async function main() {
       `versions=${versions.length} failedActive=${failedActive}`,
     );
 
-    await json(`/api/agents/${agent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({ text: "Try a nested capability escalation." }),
-    });
+    await sendCommand(token, agent, "Try a nested capability escalation.");
     snap = await waitRunIdle(token);
     const escalate = (snap.events ?? []).some?.(() => false);
     const escalateMsg = JSON.stringify(snap.messages?.slice(-1) ?? []);
@@ -675,16 +684,8 @@ async function main() {
     );
 
     const [first, secondChat] = await Promise.all([
-      json(`/api/agents/${agent}/chat`, {
-        method: "POST",
-        headers: auth(token),
-        body: JSON.stringify({ text: "Inspect current state." }),
-      }),
-      json(`/api/agents/${agent}/chat`, {
-        method: "POST",
-        headers: auth(token),
-        body: JSON.stringify({ text: "Inspect again." }),
-      }),
+      sendCommand(token, agent, "Inspect current state."),
+      sendCommand(token, agent, "Inspect again."),
     ]);
     log(
       "concurrent-queue",
@@ -752,13 +753,11 @@ async function main() {
 
     const resetAgent = `rst${Date.now().toString(36)}`;
     await ensureChat(token, resetAgent, "reset-agent");
-    await json(`/api/agents/${resetAgent}/chat`, {
-      method: "POST",
-      headers: auth(token),
-      body: JSON.stringify({
-        text: "Remember that this project's priority is reliability. Create three maintenance tasks.",
-      }),
-    });
+    await sendCommand(
+      token,
+      resetAgent,
+      "Remember that this project's priority is reliability. Create three maintenance tasks.",
+    );
     let resetSnap = await waitRunIdle(token, 25_000, resetAgent);
     const seeded =
       (resetSnap.tasks?.length ?? 0) >= 3 &&
@@ -784,12 +783,83 @@ async function main() {
       `seeded=${seeded} confirm=${missingConfirm.response.status} memory=${resetSnap.memory?.length} tasks=${resetSnap.tasks?.length}`,
     );
 
+    // Durable Streams materialize verifier — requires streams sidecar.
+    {
+      const streamAgent = `strm${Date.now().toString(36)}`;
+      await ensureChat(token, streamAgent, "stream-materialize");
+      const prompt = `Stream materialize probe ${Date.now()}`;
+      await sendCommand(token, streamAgent, prompt);
+      let streamSnap = await waitRunIdle(token, 25_000, streamAgent);
+      for (let i = 0; i < 40 && !streamSnap.streamOffset; i += 1) {
+        await wait(250);
+        streamSnap = await snapshot(token, streamAgent);
+      }
+      try {
+        const { materializeSnapshotFromDurableStream } =
+          await import("@durable-streams/tanstack-ai-transport");
+        const snapText = (streamSnap.messages ?? []).map((row) => {
+          let text = String(row.content ?? "");
+          try {
+            const parsed = JSON.parse(text);
+            text = typeof parsed === "string" ? parsed : text;
+          } catch {
+            // keep raw
+          }
+          return { role: String(row.role), text };
+        });
+        let matched = false;
+        let detail = "";
+        for (let i = 0; i < 40; i += 1) {
+          const materialized = await materializeSnapshotFromDurableStream({
+            readUrl: `${base}/api/agents/${streamAgent}/stream`,
+            headers: auth(token),
+          });
+          const streamMessages = (materialized.messages ?? []).map((row) => {
+            const text = Array.isArray(row.parts)
+              ? row.parts
+                  .filter((part) => part?.type === "text")
+                  .map((part) => String(part.content ?? part.text ?? ""))
+                  .join("")
+              : "";
+            return { role: String(row.role), text };
+          });
+          const userEcho = streamMessages.some(
+            (row) => row.role === "user" && row.text.includes(prompt),
+          );
+          const assistantPresent = streamMessages.some(
+            (row) => row.role === "assistant" && row.text.length > 0,
+          );
+          const snapUser = snapText.some((row) => row.role === "user" && row.text.includes(prompt));
+          const snapAssistant = snapText.some(
+            (row) => row.role === "assistant" && row.text.length > 0,
+          );
+          matched =
+            Boolean(streamSnap.streamOffset) &&
+            userEcho &&
+            assistantPresent &&
+            snapUser &&
+            snapAssistant;
+          detail = `userEcho=${userEcho} assistant=${assistantPresent} snap=${snapText.length} stream=${streamMessages.length} offset=${materialized.offset ?? ""}`;
+          if (matched) break;
+          await wait(250);
+        }
+        log("streams-materialize", matched, detail);
+      } catch (error) {
+        log(
+          "streams-materialize",
+          false,
+          `error=${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
     log("live-provider-smoke", false, "UNRUN: pass --live-smoke with credentials");
 
     void escalate;
   } finally {
     clearTimeout(watchdog);
     await stopChild(celld);
+    if (streams) await stopChild(streams);
     await wait(300);
     const out = join(root, "test-results");
     mkdirSync(out, { recursive: true });

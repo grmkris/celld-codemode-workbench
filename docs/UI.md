@@ -37,13 +37,13 @@ roles): [`docs/UI-LIBRARIES.md`](UI-LIBRARIES.md).
 
 ## Chat transport
 
-**Production** (`App` → `useWorkbench`):
+**Production** (`App` → `useAgentChat` + `useWorkbench`):
 
-1. `POST /api/agents/:id/chat`
-2. `GET /api/agents/:id/snapshot`
-3. Long-poll style `GET /api/agents/:id/events?after=&wait=1`
+1. `GET /api/agents/:id/snapshot` — SQLite history + `streamOffset`
+2. `useChat` with `durableStreamConnection` — subscribe at `streamOffset`, live SSE via `GET /api/agents/:id/stream`
+3. `POST /api/agents/:id/commands` — `{ kind: "send", commandId, payload: { text, messageId } }`
 
-There is no client `useChat` on the workbench path.
+There is no `POST /chat` or long-poll `/events`. Snapshot remains authoritative when the streams sidecar is offline (UI shows "delivery delayed").
 
 **Server AI** stays in `worker/runtime.ts` via TanStack `chat()`. Do not add a
 second AI/workflow engine beside that loop (`AGENTS.md`).

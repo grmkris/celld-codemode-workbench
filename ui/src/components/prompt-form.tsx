@@ -11,11 +11,20 @@ interface Props {
   busy: boolean;
   live: boolean;
   provider: string;
+  deliveryDelayed?: boolean;
   onChange: (value: string) => void;
   onSend: () => void;
 }
 
-export function PromptForm({ value, busy, live, provider, onChange, onSend }: Props) {
+export function PromptForm({
+  value,
+  busy,
+  live,
+  provider,
+  deliveryDelayed,
+  onChange,
+  onSend,
+}: Props) {
   return (
     <form
       className="shrink-0 border-t border-border bg-[var(--raised)]/40 px-5 py-4"
@@ -45,7 +54,12 @@ export function PromptForm({ value, busy, live, provider, onChange, onSend }: Pr
         />
         <InputGroupAddon align="block-end" className="justify-between">
           <span className="machine text-muted-foreground">
-            {live ? `live ${provider}` : "fixture"} — Enter to send
+            {deliveryDelayed
+              ? "delivery delayed — snapshot remains authoritative"
+              : live
+                ? `live ${provider}`
+                : "fixture"}{" "}
+            — Enter to send
           </span>
           <InputGroupButton
             type="submit"

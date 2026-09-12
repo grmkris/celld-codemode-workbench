@@ -15,6 +15,7 @@ const RUN_COLOR: Record<string, string> = {
   "awaiting approval": "text-[var(--run-failed)]",
   cancelling: "text-[var(--run-queued)]",
   finished: "text-[var(--run-completed)]",
+  "delivery delayed": "text-[var(--run-queued)]",
 };
 
 export type PlatformStatus =
@@ -27,7 +28,8 @@ export type PlatformStatus =
   | "cancelling"
   | "finished"
   | "idle"
-  | "failed";
+  | "failed"
+  | "delivery delayed";
 
 export function derivePlatformStatus(input: {
   runStatus: string;
@@ -38,6 +40,7 @@ export function derivePlatformStatus(input: {
 }): PlatformStatus {
   if ((input.pendingApprovals ?? 0) > 0) return "awaiting approval";
   const connection = String(input.connectionStatus);
+  if (connection === "error") return "delivery delayed";
   if (connection === "reconnecting" || connection === "connecting") {
     return "reconnecting";
   }

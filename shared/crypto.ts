@@ -24,16 +24,25 @@ export function bytesOf(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+/**
+ * Deterministic JSON for fingerprints and stream bodies.
+ * Matches JSON.stringify on `undefined`: omit object keys, encode array holes as null.
+ */
 export function stableJson(value: unknown): string {
+  if (value === undefined) {
+    // JSON.stringify(undefined) returns undefined; callers that embed in objects
+    // must omit the key. Top-level undefined is represented as null for safety.
+    return "null";
+  }
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+    return `[${value.map((item) => (item === undefined ? "null" : stableJson(item))).join(",")}]`;
   }
-  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
-    left.localeCompare(right),
-  );
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .toSorted(([left], [right]) => left.localeCompare(right));
   return `{${entries
     .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
     .join(",")}}`;

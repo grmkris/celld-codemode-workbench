@@ -5,7 +5,7 @@ import { HostError } from "../shared/errors";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema";
 import { Sql } from "./sql";
 import { Store } from "./store";
-import { executeSnippet, runConversation } from "./runtime";
+import { executeSnippet, publishRunError, runConversation } from "./runtime";
 import { configureQuickJSWasm } from "./isolate";
 import type { Env } from "./env";
 import { grantedSet, type HostContext } from "./capabilities";
@@ -20,6 +20,7 @@ import { COMMAND_KINDS, type CommandEnvelope, type CommandKind } from "./command
 import { chatStreamUrl, readStreamsConfig } from "./streams/config";
 import { OutboxPublisher } from "./streams/publisher";
 import { proxyStreamRead } from "./streams/proxy";
+import { toMessageEchoChunks } from "@durable-streams/tanstack-ai-transport";
 import wasmModule from "./vendor/emscripten-module.wasm";
 
 configureQuickJSWasm(wasmModule);
@@ -62,15 +63,12 @@ export class AgentCell {
       if (!this.store.agent()) {
         return json({ error: "chat not found", code: "not_found" }, 404);
       }
-      if (this.isArchived() && url.pathname !== "/snapshot" && url.pathname !== "/events") {
+      if (this.isArchived() && url.pathname !== "/snapshot") {
         return json({ error: "chat archived", code: "gone" }, 410);
       }
 
       if (request.method === "GET" && url.pathname === "/snapshot") {
         return json(this.snapshot());
-      }
-      if (request.method === "GET" && url.pathname === "/events") {
-        return await this.events(url);
       }
       if (request.method === "GET" && url.pathname === "/stream") {
         return await this.streamProxy(request);
@@ -80,10 +78,6 @@ export class AgentCell {
       }
       if (request.method === "POST" && url.pathname === "/archive") {
         return this.markArchived();
-      }
-      if (request.method === "POST" && url.pathname === "/chat") {
-        this.recoverOrContinue();
-        return await this.chat(await request.json());
       }
       if (request.method === "POST" && url.pathname === "/stop") {
         this.recoverOrContinue();
@@ -304,35 +298,8 @@ export class AgentCell {
       queuePaused: this.store.isQueuePaused(),
       latestEventId: this.store.latestEventId(),
       streamOffset: this.store.publisherOffset("chat"),
+      events: this.store.eventsAfter(Math.max(0, this.store.latestEventId() - 80)),
     };
-  }
-
-  private async events(url: URL): Promise<Response> {
-    const after = Number(url.searchParams.get("after") ?? "0");
-    const wait = url.searchParams.get("wait") === "1";
-    let rows = this.store.eventsAfter(after);
-    if (wait && rows.length === 0) {
-      const deadline = Date.now() + 15_000;
-      while (Date.now() < deadline && rows.length === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        rows = this.store.eventsAfter(after);
-      }
-    }
-    return json({ events: rows, latestEventId: this.store.latestEventId() });
-  }
-
-  private async chat(body: { text?: string }): Promise<Response> {
-    const commandId = newId("cmd");
-    const outcome = await this.admitSend(
-      String(body.text ?? "").trim(),
-      undefined,
-      this.ownerId,
-      commandId,
-    );
-    if (outcome.waitUntil) {
-      this.ctx.waitUntil(outcome.waitUntil);
-    }
-    return json(outcome.body, outcome.status);
   }
 
   private principalFromRequest(request: Request): string {
@@ -457,6 +424,15 @@ export class AgentCell {
     }
 
     const userMessageId = this.store.addMessage("user", text, messageId);
+    const outbox = this.outboxPublisher();
+    for (const chunk of toMessageEchoChunks({
+      id: userMessageId,
+      role: "user",
+      parts: [{ type: "text", content: text }],
+    })) {
+      await outbox.enqueue("chunk", chunk);
+    }
+
     const active = this.store.activeRun();
     if (active) {
       const queued = this.store.queuedItems();
@@ -471,6 +447,8 @@ export class AgentCell {
         messageId: userMessageId,
         commandId,
       });
+      // No active process to flush — publish the echo now.
+      this.flushOutboxAsync();
       this.pushActivity(String(active.status ?? "running"));
       return {
         status: 202,
@@ -721,20 +699,47 @@ export class AgentCell {
   private flushOutboxAsync(): void {
     const publisher = this.outboxPublisher();
     const streamUrl = chatStreamUrl(this.agentId, readStreamsConfig(this.env));
-    this.ctx.waitUntil(publisher.flush(streamUrl).catch(() => undefined));
+    this.ctx.waitUntil(
+      publisher
+        .flush(streamUrl)
+        .then((result) => {
+          if (result.delayed > 0) {
+            this.store.addEvent(null, "outbox.flush_delayed", {
+              published: result.published,
+              delayed: result.delayed,
+              streamUrl,
+            });
+          }
+        })
+        .catch((error) => {
+          this.store.addEvent(null, "outbox.flush_failed", {
+            message: error instanceof Error ? error.message : String(error),
+            streamUrl,
+            pending: publisher.pendingRows().length,
+          });
+        }),
+    );
   }
 
   private recoverOrContinue(): void {
     const active = this.store.activeRun();
     if (active && !this.abort && String(active.status) === "running") {
-      this.store.updateRun(String(active.id), {
+      const runId = String(active.id);
+      const message = "recovered after isolate loss; journal was not replayed";
+      this.store.updateRun(runId, {
         status: "failed",
-        error: "recovered after isolate loss; journal was not replayed",
+        error: message,
         finished_at: Date.now(),
       });
-      this.store.addEvent(String(active.id), "run.recovered", {
+      this.store.addEvent(runId, "run.recovered", {
         reason: "unowned running work was not replayed",
       });
+      void publishRunError(this.outboxPublisher(), {
+        runId,
+        agentId: this.agentId,
+        code: "recovered",
+        message,
+      }).then(() => this.flushOutboxAsync());
       this.pushActivity("failed");
     }
     this.advanceQueueIfReady();
@@ -764,6 +769,12 @@ export class AgentCell {
       if (current && Number(current.cancel_requested)) {
         this.store.confirmTerminated(runId, "cancelled before start");
         this.store.addEvent(runId, "run.terminated", { reason: "cancelled before start" });
+        await publishRunError(this.outboxPublisher(), {
+          runId,
+          agentId: this.agentId,
+          code: "cancelled",
+          message: "cancelled before start",
+        });
         this.pushActivity("terminated");
         return;
       }
@@ -772,7 +783,26 @@ export class AgentCell {
       this.pushActivity(String(finished?.status ?? "completed"));
     } finally {
       this.abort = null;
-      this.flushOutboxAsync();
+      // Await flush so the run's waitUntil covers publication (no concurrent flushes).
+      const publisher = this.outboxPublisher();
+      const streamUrl = chatStreamUrl(this.agentId, readStreamsConfig(this.env));
+      try {
+        const result = await publisher.flush(streamUrl);
+        if (result.delayed > 0) {
+          this.store.addEvent(runId, "outbox.flush_delayed", {
+            published: result.published,
+            delayed: result.delayed,
+            pending: publisher.pendingRows().length,
+            streamUrl,
+          });
+        }
+      } catch (error) {
+        this.store.addEvent(runId, "outbox.flush_failed", {
+          message: error instanceof Error ? error.message : String(error),
+          streamUrl,
+          pending: publisher.pendingRows().length,
+        });
+      }
       const advanced = this.advanceQueueIfReady();
       if (!advanced && !this.store.activeRun()) {
         const last = this.store.lastRun();

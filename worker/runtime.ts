@@ -1,5 +1,6 @@
 import { chat, maxIterations } from "@tanstack/ai";
 import { createCodeMode } from "@tanstack/ai-code-mode";
+import { sanitizeChunkForStorage } from "@durable-streams/tanstack-ai-transport";
 import { LIMITS } from "../shared/limits";
 import { newId } from "../shared/ids";
 import { redactValue } from "../shared/redact";
@@ -37,6 +38,27 @@ export interface RuntimeOptions {
 
 function record(store: Store, runId: string | null, type: string, payload: unknown): void {
   store.addEvent(runId, type, redactValue(payload));
+}
+
+/** Publish a terminal RUN_ERROR chunk so stream subscribers stop waiting. */
+export async function publishRunError(
+  outbox: OutboxPublisher | undefined,
+  input: {
+    runId: string;
+    agentId: string;
+    code: string;
+    message: string;
+  },
+): Promise<void> {
+  if (!outbox) return;
+  await outbox.enqueue("chunk", {
+    type: "RUN_ERROR",
+    runId: input.runId,
+    threadId: input.agentId,
+    code: input.code,
+    message: input.message,
+    timestamp: Date.now(),
+  });
 }
 
 export async function executeProgram(
@@ -263,16 +285,17 @@ export async function runConversation(options: RuntimeOptions, userText: string)
     if (chunkBatch.length === 0) return;
     const messageId = ensureAssistantMessage();
     for (const chunk of chunkBatch) {
-      record(options.store, options.runId, String((chunk as { type: string }).type), chunk);
+      const sanitized = sanitizeChunkForStorage(chunk);
+      record(options.store, options.runId, String((sanitized as { type: string }).type), sanitized);
       if (options.outbox) {
-        await options.outbox.enqueue("chunk", chunk);
+        await options.outbox.enqueue("chunk", sanitized);
       }
       options.store.addMessagePart({
         messageId,
-        kind: String((chunk as { type: string }).type),
+        kind: String((sanitized as { type: string }).type),
         step,
         seq: partSeq,
-        payload: chunk,
+        payload: sanitized,
       });
       partSeq += 1;
     }
@@ -326,20 +349,41 @@ export async function runConversation(options: RuntimeOptions, userText: string)
         assistantMessageId ?? options.store.addMessage("assistant", ""),
         `Approval required: ${error.operationId}`,
       );
+      if (options.outbox) {
+        await options.outbox.enqueue("chunk", {
+          type: "CUSTOM",
+          name: "approval.required",
+          value: { operationId: error.operationId },
+          timestamp: Date.now(),
+        });
+      }
       return;
     }
     if (error instanceof CancelledError || error instanceof FenceError) {
       options.store.confirmTerminated(options.runId!, error.message);
       record(options.store, options.runId, "run.terminated", { reason: error.message });
+      await publishRunError(options.outbox, {
+        runId: options.runId!,
+        agentId: options.agentId,
+        code: error instanceof FenceError ? "fenced" : "cancelled",
+        message: error.message,
+      });
       return;
     }
     const message = error instanceof Error ? error.message : String(error);
+    const code = error instanceof HostError ? error.code : "failed";
     options.store.updateRun(options.runId!, {
       status: "failed",
       error: message,
       finished_at: Date.now(),
     });
     record(options.store, options.runId, "run.failed", { message });
+    await publishRunError(options.outbox, {
+      runId: options.runId!,
+      agentId: options.agentId,
+      code,
+      message,
+    });
   }
 }
 

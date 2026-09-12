@@ -69,8 +69,7 @@ test.describe("shared session (multi-tab)", () => {
     await sendA.click();
 
     await expect(pageA.getByText(prompt).first()).toBeVisible({ timeout: 20_000 });
-
-    await pageB.goto(`/?c=${encodeURIComponent(chatId)}`);
+    // Live stream should deliver the user echo to the second tab without a reload.
     await expect(pageB.getByText(prompt).first()).toBeVisible({ timeout: 30_000 });
 
     const assistantPattern =
